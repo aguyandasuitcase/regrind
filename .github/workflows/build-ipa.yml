@@ -45,6 +45,12 @@ jobs:
           P=src-tauri/gen/apple/regrind.xcodeproj/project.pbxproj
           perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 2;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
           sed -i '' 's/org\.regrind\.ios/dev.sideload.regrind/g' src-tauri/tauri.ios.conf.json src-tauri/gen/apple/project.yml
+          # Tauri rejects prerelease versions like 0.1.0-beta.21-dev as bundle version
+          v="$(jq -r .version src-tauri/tauri.conf.json)"
+          bv="$(echo "$v" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)-[A-Za-z]+\.([0-9]+).*/\1.\2/; s/-.*//')"
+          echo "bundle version: $bv"
+          jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' src-tauri/tauri.ios.conf.json > /tmp/ios.json && mv /tmp/ios.json src-tauri/tauri.ios.conf.json
+          cat src-tauri/tauri.ios.conf.json
           grep -n "CODE_SIGN\|DEVELOPMENT_TEAM\|TARGETED_DEVICE_FAMILY\|PRODUCT_BUNDLE_IDENTIFIER" "$P"
 
       - name: Build the archive
