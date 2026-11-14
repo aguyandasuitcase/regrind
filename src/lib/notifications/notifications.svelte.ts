@@ -1,5 +1,5 @@
 import {
-	getActive,
+	active as getActiveNotifications,
 	isPermissionGranted,
 	onAction,
 	registerActionTypes,
@@ -290,7 +290,7 @@ class NotificationService {
 	async withdrawConversation(conversationId: string): Promise<void> {
 		if (!isIosPlatform()) return;
 		try {
-			const waiting = (await getActive()).filter(
+			const waiting = (await getActiveNotifications()).filter(
 				(notification) => notification.group === conversationId,
 			);
 			if (waiting.length === 0) return;

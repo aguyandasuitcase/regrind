@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const plugin = vi.hoisted(() => ({
-	getActive: vi.fn(),
+	active: vi.fn(),
 	removeActive: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
-	getActive: plugin.getActive,
+	active: plugin.active,
 	removeActive: plugin.removeActive,
 	isPermissionGranted: vi.fn(),
 	onAction: vi.fn(),
@@ -36,7 +36,7 @@ afterEach(() => {
 describe("withdrawing a conversation's notifications", () => {
 	it("removes only that conversation's delivered notifications on iOS", async () => {
 		runningOn("ios");
-		plugin.getActive.mockResolvedValue([
+		plugin.active.mockResolvedValue([
 			{ id: 1, group: "chat-a" },
 			{ id: 2, group: "chat-b" },
 			{ id: 3, group: "chat-a" },
@@ -50,7 +50,7 @@ describe("withdrawing a conversation's notifications", () => {
 
 	it("removes nothing when the conversation has none waiting", async () => {
 		runningOn("ios");
-		plugin.getActive.mockResolvedValue([{ id: 2, group: "chat-b" }]);
+		plugin.active.mockResolvedValue([{ id: 2, group: "chat-b" }]);
 
 		await notifications.withdrawConversation("chat-a");
 
@@ -62,12 +62,12 @@ describe("withdrawing a conversation's notifications", () => {
 
 		await notifications.withdrawConversation("chat-a");
 
-		expect(plugin.getActive).not.toHaveBeenCalled();
+		expect(plugin.active).not.toHaveBeenCalled();
 	});
 
 	it("survives the plugin failing", async () => {
 		runningOn("ios");
-		plugin.getActive.mockRejectedValue(new Error("boom"));
+		plugin.active.mockRejectedValue(new Error("boom"));
 		const log = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		await expect(
