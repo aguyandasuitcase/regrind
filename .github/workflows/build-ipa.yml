@@ -1,0 +1,106 @@
+name: build-ipa
+
+# Personal unsigned iPad build. Not part of the upstream project.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: Unsigned iPad IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Use the newest Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$newest"
+          xcodebuild -version
+
+      - name: Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-ios
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --no-summary
+
+      - name: Unsigned, iPad only, sideload bundle id
+        run: |
+          P=src-tauri/gen/apple/regrind.xcodeproj/project.pbxproj
+          perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/DEVELOPMENT_TEAM = "\$\(APPLE_DEVELOPMENT_TEAM\)";/DEVELOPMENT_TEAM = "";/g; s/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 2;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
+          sed -i '' 's/org\.regrind\.ios/dev.sideload.regrind/g' src-tauri/tauri.ios.conf.json src-tauri/gen/apple/project.yml
+          grep -n "CODE_SIGN\|DEVELOPMENT_TEAM\|TARGETED_DEVICE_FAMILY\|PRODUCT_BUNDLE_IDENTIFIER" "$P"
+
+      - name: Build the archive
+        # The export step wants a signing identity and is expected to fail,
+        # so only the archive decides the result.
+        continue-on-error: true
+        env:
+          APPLE_DEVELOPMENT_TEAM: ""
+        run: bun tauri ios build --ci --export-method debugging
+
+      - name: Package the unsigned IPA
+        id: package
+        run: |
+          archive="$(find src-tauri/gen/apple -maxdepth 4 -name '*.xcarchive' | head -1)"
+          if [ -z "$archive" ]; then echo "No .xcarchive was produced"; exit 1; fi
+          app="$(ls -d "$archive"/Products/Applications/*.app | head -1)"
+          echo "app: $app"
+          rm -rf ipa-work && mkdir -p ipa-work/Payload
+          cp -R "$app" ipa-work/Payload/
+          A="$(ls -d ipa-work/Payload/*.app | head -1)"
+          find ipa-work/Payload -depth \( -name '*.framework' -o -name '*.appex' -o -name '*.dylib' \) -exec codesign --remove-signature {} \; || true
+          codesign --remove-signature "$A" || true
+          find ipa-work/Payload -name _CodeSignature -type d -prune -exec rm -rf {} +
+          find ipa-work/Payload -name embedded.mobileprovision -delete
+          version="$(jq -r .version src-tauri/tauri.conf.json)"
+          name="ReGrind-${version}-${GITHUB_SHA::7}-unsigned.ipa"
+          (cd ipa-work && zip -qry "../$name" Payload)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -l "$name"
+
+      - name: Verify the IPA contents
+        run: |
+          set -e
+          rm -rf ipa-check && mkdir ipa-check
+          unzip -q "${{ steps.package.outputs.name }}" -d ipa-check
+          appdir="$(ls -d ipa-check/Payload/*.app)"
+          plist="$appdir/Info.plist"
+          plutil -p "$plist" | grep -E "CFBundleIdentifier|UIDeviceFamily|MinimumOSVersion" -A2
+          bin="$appdir/$(plutil -extract CFBundleExecutable raw "$plist")"
+          codesign -dv "$bin" 2>&1 | tail -2 || true
+          test ! -d "$appdir/_CodeSignature"
+          echo "--- imported network symbols (informational)"
+          nm -u "$bin" 2>/dev/null | grep -ci "NSURLSession\|CFNetwork" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.name }}
+          retention-days: 14
+
+      - name: Publish as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="ios-${GITHUB_SHA::7}-run${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "${{ steps.package.outputs.name }}" \
+            --target "$GITHUB_SHA" \
+            --title "ReGrind ${GITHUB_SHA::7} (unsigned iPad ipa)" \
+            --notes "Unsigned iPad build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
