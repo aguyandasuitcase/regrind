@@ -98,8 +98,9 @@ jobs:
           rm -rf ipa-work && mkdir -p ipa-work/Payload
           cp -R "$app" ipa-work/Payload/
           A="$(ls -d ipa-work/Payload/*.app | head -1)"
-          find ipa-work/Payload -depth \( -name '*.framework' -o -name '*.appex' -o -name '*.dylib' \) -exec codesign --remove-signature {} \; || true
-          codesign --remove-signature "$A" || true
+          # Keep the binary's own ad-hoc signature block (LC_CODE_SIGNATURE): on-device
+          # signers replace it, but cannot insert one. Only the bundle-level signing
+          # material is removed.
           find ipa-work/Payload -name _CodeSignature -type d -prune -exec rm -rf {} +
           find ipa-work/Payload -name embedded.mobileprovision -delete
           version="$(jq -r .version src-tauri/tauri.conf.json)"
@@ -119,6 +120,8 @@ jobs:
           bin="$appdir/$(plutil -extract CFBundleExecutable raw "$plist")"
           codesign -dv "$bin" 2>&1 | tail -2 || true
           test ! -d "$appdir/_CodeSignature"
+          otool -l "$bin" | grep -c LC_CODE_SIGNATURE | grep -qx 1 || { echo "binary has no LC_CODE_SIGNATURE"; exit 1; }
+          echo "LC_CODE_SIGNATURE present"
           echo "--- imported network symbols (informational)"
           nm -u "$bin" 2>/dev/null | grep -ci "NSURLSession\|CFNetwork" || true
 
