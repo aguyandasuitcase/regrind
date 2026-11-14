@@ -98,9 +98,10 @@ jobs:
           rm -rf ipa-work && mkdir -p ipa-work/Payload
           cp -R "$app" ipa-work/Payload/
           A="$(ls -d ipa-work/Payload/*.app | head -1)"
-          # Keep the binary's own ad-hoc signature block (LC_CODE_SIGNATURE): on-device
-          # signers replace it, but cannot insert one. Only the bundle-level signing
-          # material is removed.
+          # Give the binary an ad-hoc signature (no identity, no team). On-device
+          # signers replace an existing LC_CODE_SIGNATURE but cannot insert one, and
+          # the unsigned archive has none. Only the bundle-level material is removed.
+          codesign --force --deep --sign - --timestamp=none "$A"
           find ipa-work/Payload -name _CodeSignature -type d -prune -exec rm -rf {} +
           find ipa-work/Payload -name embedded.mobileprovision -delete
           version="$(jq -r .version src-tauri/tauri.conf.json)"
