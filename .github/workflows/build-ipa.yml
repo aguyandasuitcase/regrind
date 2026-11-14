@@ -43,7 +43,7 @@ jobs:
       - name: Unsigned, iPad only, sideload bundle id
         run: |
           P=src-tauri/gen/apple/regrind.xcodeproj/project.pbxproj
-          perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/DEVELOPMENT_TEAM = "\$\(APPLE_DEVELOPMENT_TEAM\)";/DEVELOPMENT_TEAM = "";/g; s/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 2;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
+          perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 2;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
           sed -i '' 's/org\.regrind\.ios/dev.sideload.regrind/g' src-tauri/tauri.ios.conf.json src-tauri/gen/apple/project.yml
           grep -n "CODE_SIGN\|DEVELOPMENT_TEAM\|TARGETED_DEVICE_FAMILY\|PRODUCT_BUNDLE_IDENTIFIER" "$P"
 
@@ -52,7 +52,7 @@ jobs:
         # so only the archive decides the result.
         continue-on-error: true
         env:
-          APPLE_DEVELOPMENT_TEAM: ""
+          APPLE_DEVELOPMENT_TEAM: "ABCDE12345"  # dummy, only satisfies tauri; signing is disabled
         run: bun tauri ios build --ci --export-method debugging
 
       - name: Package the unsigned IPA
