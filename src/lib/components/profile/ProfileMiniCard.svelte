@@ -1,0 +1,295 @@
+<script lang="ts">
+	import NotePencilIcon from "phosphor-svelte/lib/NotePencilIcon";
+	import StarIcon from "phosphor-svelte/lib/StarIcon";
+	import type { Snippet } from "svelte";
+
+	import DistanceFormatted from "#lib/components/profile/DistanceFormatted.svelte";
+	import { profileGestures } from "#lib/components/profile/peek/peek-state.svelte.ts";
+	import ProfileRightNowIndicator from "#lib/components/profile/ProfileRightNowIndicator.svelte";
+	import ProfileStatusIndicator from "#lib/components/profile/ProfileStatusIndicator.svelte";
+	import TapIcon from "#lib/components/profile/TapIcon.svelte";
+	import UserAvatar from "#lib/components/profile/UserAvatar.svelte";
+	import { getNow } from "#lib/util/now.ts";
+	import type { GridTap } from "#lib/interest/profile-activity.svelte.ts";
+	import type { RightNowStatus } from "#lib/model/right-now.ts";
+
+	let {
+		mediaHash = null,
+		displayName = null,
+		age = null,
+		distance = null,
+		unread = null,
+		onlineUntil = null,
+		isFavorite = false,
+		isVisiting = false,
+		framed = false,
+		tap = null,
+		profileId = undefined,
+		note = null,
+		href = null,
+		onclick = undefined,
+		class: className,
+		rightNow = null,
+		portrait = false,
+		meta,
+		overlay,
+	}: {
+		mediaHash?: string | null;
+		displayName?: string | null;
+		age?: number | null;
+		distance?: number | null;
+		unread?: number | null;
+		onlineUntil?: number | null;
+		isFavorite?: boolean;
+		isVisiting?: boolean;
+		/** Outlined, for a recent chat. */
+		framed?: boolean;
+		tap?: GridTap | null;
+		/** Enables the long-press peek and double-tap-to-tap on the link. */
+		profileId?: number;
+		/** The note the user attached to this favorite, if any. */
+		note?: string | null;
+		href?: string | null;
+		/** Fires just before the card navigates. Ignored without an `href`. */
+		onclick?: import("svelte/elements").MouseEventHandler<HTMLAnchorElement>;
+		class?: import("svelte/elements").ClassValue;
+		rightNow?: RightNowStatus | null;
+		/** 3:4 instead of square. */
+		portrait?: boolean;
+		/** A trailing label line — what this tile says beyond who it is. */
+		meta?: Snippet;
+		overlay?: Snippet;
+	} = $props();
+
+	const noteText = $derived(note?.trim() ?? "");
+
+	let element: HTMLElement | null = $state(null);
+	const gestures = $derived(
+		profileId === undefined
+			? undefined
+			: profileGestures(
+					() => element,
+					() => ({
+						profileId,
+						displayName,
+						mediaHash,
+						isFavorite,
+						age,
+						distance,
+						onlineUntil,
+						isVisiting,
+						rightNow,
+						note,
+					}),
+				),
+	);
+
+	// Matches what ProfileStatusIndicator itself draws, so the identity line
+	// stays for a profile whose only marker is the online dot.
+	const isOnline = $derived((onlineUntil ?? 0) > getNow());
+
+	// Whether the card has anything to say about who this is — what the note
+	// stacks on top of when it does.
+	const hasIdentity = $derived(
+		displayName !== null ||
+			age !== null ||
+			isVisiting ||
+			isOnline ||
+			(rightNow !== null && rightNow !== "NOT_ACTIVE"),
+	);
+
+	// Only the text actually rendered on the card, so the card gets an
+	// aria-label exactly when it would otherwise announce nothing.
+	const hasVisibleText = $derived(
+		displayName !== null || age !== null || distance !== null,
+	);
+
+	// The band grows a taller gradient ramp once it carries more than one line.
+	const bandLines = $derived(
+		(hasIdentity ? 1 : 0) +
+			(noteText !== "" ? 1 : 0) +
+			(meta !== undefined ? 1 : 0),
+	);
+</script>
+
+{#snippet content()}
+	<div class="absolute size-full bg-media-placeholder">
+		<UserAvatar {mediaHash} class="size-full" size="xl" />
+	</div>
+	{#if distance !== null}
+		<span class="profile-card-distance absolute top-1.5 right-1.5 z-1">
+			<DistanceFormatted {distance} />
+		</span>
+	{/if}
+	<!-- Bare glyphs in the corner, no disc behind them: at three tiles across, a
+	     filled plate per marker is most of what you see. A shadow carries them
+	     over a light photo the same way the distance label is carried. -->
+	{#if isFavorite || tap !== null}
+		<div class="absolute inset-s-1.5 top-1.5 z-1 flex flex-col gap-1">
+			{#if isFavorite}
+				<StarIcon
+					weight="fill"
+					class="marker text-yellow-400"
+					aria-label="Favorite"
+					role="img"
+				/>
+			{/if}
+			{#if tap !== null}
+				<span
+					class="marker flex"
+					role="img"
+					aria-label={tap.received ? "Tapped you" : "You tapped"}
+				>
+					{#if tap.received}
+						<TapIcon tapType={tap.tapType} sent class="size-full" />
+					{:else}
+						<TapIcon
+							tapType={tap.tapType}
+							class="size-full text-plate-foreground"
+						/>
+					{/if}
+				</span>
+			{/if}
+		</div>
+	{/if}
+	<!-- One label band per tile rather than scattered overlays: who this is
+	     first, then the private note, then whatever the screen adds. Any line
+	     may be absent, and a tile with none renders no band at all. -->
+	{#if bandLines > 0}
+		<div
+			class={[
+				"tile-scrim z-1 flex min-w-0 items-end gap-1",
+				{ "tile-scrim-tall": bandLines > 1 },
+			]}
+		>
+			<div class="flex min-w-0 flex-1 flex-col">
+				{#if hasIdentity}
+					<div class="flex min-w-0 items-center">
+						<ProfileStatusIndicator
+							{onlineUntil}
+							{isVisiting}
+							class="me-1"
+						/>
+
+						<ProfileRightNowIndicator {rightNow} class="me-1" />
+
+						{#if displayName !== null}
+							<!-- Emoji sit taller and deeper than the tight
+							     line box `truncate` clips to, so a name that
+							     ends in one loses its bottom. The padding
+							     pushes the clip edge off the glyphs and the
+							     matching negative margin keeps the band the
+							     same height. -->
+							<span
+								class="-my-[0.25em] truncate py-[0.25em] text-meta/[1.1] font-semibold"
+							>
+								{displayName}
+							</span>
+						{/if}
+						{#if displayName !== null && age !== null}
+							<span class="text-meta/[1.1] font-semibold"
+								>,&nbsp;</span
+							>
+						{/if}
+						{#if age !== null}
+							<span
+								class="shrink-0 text-meta/[1.1] font-semibold"
+							>
+								{age}
+							</span>
+						{/if}
+					</div>
+				{/if}
+				{#if noteText !== ""}
+					<div class="mt-0.5 flex min-w-0 items-center gap-1">
+						<NotePencilIcon
+							weight="fill"
+							role="img"
+							aria-label="Has a note"
+							class="size-2.5 shrink-0 text-plate-accent"
+						/>
+						<span class="truncate text-3xs/[1.1] text-plate-muted">
+							{noteText}
+						</span>
+					</div>
+				{/if}
+				{#if meta !== undefined}
+					<div
+						class={[
+							"flex min-w-0 items-center gap-1.5 text-2xs/[1.1] font-medium text-plate-muted",
+							{ "mt-0.5": bandLines > 1 },
+						]}
+					>
+						{@render meta()}
+					</div>
+				{/if}
+			</div>
+			{#if unread !== null && unread > 0}
+				<span
+					class="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-2xs font-semibold text-primary-foreground"
+				>
+					{#if unread > 99}
+						<span class="text-3xs">99+</span>
+					{:else}
+						{unread}
+					{/if}
+					<span class="sr-only">unread messages</span>
+				</span>
+			{/if}
+		</div>
+	{/if}
+	{#if framed}
+		<!-- Flush with the tile, so it reads as part of it, not a selection. -->
+		<div
+			class="chat-frame pointer-events-none absolute inset-0 z-2 rounded-[inherit]"
+		></div>
+	{/if}
+	{@render overlay?.()}
+{/snippet}
+
+{#if href !== null}
+	<a
+		bind:this={element}
+		{href}
+		{onclick}
+		{...gestures}
+		aria-label={hasVisibleText ? undefined : "Profile"}
+		class={[
+			"relative flex items-end overflow-hidden",
+			{
+				"[-webkit-touch-callout:none] **:[-webkit-touch-callout:none]":
+					gestures !== undefined,
+			},
+			{ "aspect-3/4": portrait, "aspect-square": !portrait },
+			className,
+		]}
+	>
+		{@render content()}
+	</a>
+{:else}
+	<div
+		class={[
+			"relative flex items-end overflow-hidden",
+			{ "aspect-3/4": portrait, "aspect-square": !portrait },
+			className,
+		]}
+	>
+		{@render content()}
+	</div>
+{/if}
+
+<style lang="postcss">
+	@reference "$layout";
+
+	/* A tile's corner status glyph. */
+	:global(.marker) {
+		@apply size-3.5 shrink-0;
+		filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
+	}
+
+	.chat-frame {
+		box-shadow:
+			inset 0 0 0 2px var(--color-sky-400),
+			inset 0 0 14px --alpha(var(--color-sky-400) / 30%);
+	}
+</style>

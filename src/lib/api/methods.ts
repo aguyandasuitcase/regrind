@@ -1,0 +1,306 @@
+import { invoke } from "@tauri-apps/api/core";
+import z from "zod";
+
+import {
+	ApiError,
+	type ApiErrorKind,
+	apiErrorKinds,
+	blockedAndStaleMessages,
+	httpStatusOf,
+} from "#lib/api/api-error.ts";
+import { capText } from "#lib/api/redact/text.ts";
+import { summariseNonJson } from "#lib/api/redact/value.ts";
+import {
+	requestBlockedAlertState,
+	type RequestBlockKind,
+} from "#lib/api/request-blocked-state.svelte.ts";
+import { demoCallMethod } from "#lib/demo/index.ts";
+import {
+	type AccountStatusError,
+	accountStatusErrorSchema,
+} from "#lib/model/authentication.ts";
+import { geohashSchema } from "#lib/model/geohash.ts";
+
+const maxPrettyMessageChars = 200;
+
+const unknownErrorMessage = "An unknown error occurred";
+
+const connectionFailedMessage =
+	"Couldn't connect to Grindr. Check your internet connection and try again.";
+
+const messagelessMessages: Partial<Record<ApiErrorKind, string>> = {
+	...blockedAndStaleMessages,
+	RateLimited: "Grindr is rate limiting us",
+	NotSignedIn: "You're signed out",
+	ContentTooLarge: "Larger than the upload limit",
+};
+
+export const banInfoSchema = z.object({
+	kind: z.enum(["profile", "device", "network", "underage", "unknown"]),
+	code: z.number(),
+	message: z.string(),
+	reason: z.string().nullish(),
+	subReason: z.string().nullish(),
+	automated: z.boolean().nullish(),
+});
+export type BanInfo = z.infer<typeof banInfoSchema>;
+
+export const restrictionSchema = z.object({
+	kind: z.enum([
+		"ageVerification",
+		"timedBan",
+		"trustVendorRejected",
+		"other",
+	]),
+	region: z.string().nullish(),
+	reason: z.string().nullish(),
+	subReason: z.string().nullish(),
+	endsAt: z.int().nullish(),
+});
+export type Restriction = z.infer<typeof restrictionSchema>;
+
+export const signInResultSchema = z.object({
+	profileId: z.coerce.number().int().nonnegative(),
+	restriction: restrictionSchema.nullish(),
+});
+
+const profileIdSchema = z.int().nonnegative();
+
+export const accountSummarySchema = z.object({
+	profileId: profileIdSchema,
+	/** The account's own profile name, once it has been active. */
+	name: z.string().nullish(),
+	/** Absent for a third-party sign-in, which has no address to show. */
+	email: z.string().nullish(),
+	avatar: z.string().nullish(),
+	google: z.boolean(),
+	addedAt: z.number().int().nonnegative(),
+	active: z.boolean(),
+});
+export type AccountSummary = z.infer<typeof accountSummarySchema>;
+
+export const methods = {
+	sign_in_with_email: {
+		request: z.object({
+			email: z.email(),
+			password: z.string().min(1),
+			captchaToken: z.string().optional(),
+		}),
+		response: signInResultSchema,
+	},
+	sign_in_with_google: {
+		request: z.undefined(),
+		response: signInResultSchema,
+	},
+	sign_in_with_google_token: {
+		request: z.object({ token: z.string().min(1) }),
+		response: signInResultSchema,
+	},
+	sign_in_with_facebook: {
+		request: z.undefined(),
+		response: signInResultSchema,
+	},
+	account_restriction: {
+		request: z.undefined(),
+		response: restrictionSchema.nullish(),
+	},
+	session_feature_flags: {
+		request: z.undefined(),
+		response: z.array(z.string()),
+	},
+	storage_backend: {
+		request: z.undefined(),
+		response: z.enum(["keyring", "file", "unavailable"]),
+	},
+	// The geohash seeds the resumed session's recorded location, which is what
+	// unlocks the region-gated entitlements.
+	refresh_session: {
+		request: z.object({ geohash: geohashSchema.optional() }).optional(),
+		response: signInResultSchema,
+	},
+	rotate_api_params: {
+		request: z.undefined(),
+		response: z.object({
+			"user-agent": z.string(),
+			"l-device-info": z.string(),
+		}),
+	},
+	// The account that is active once this one is gone, or null when it was the
+	// last one signed in.
+	sign_out: { request: z.undefined(), response: profileIdSchema.nullable() },
+	accounts_list: {
+		request: z.undefined(),
+		response: z.array(accountSummarySchema),
+	},
+	account_switch: {
+		request: z.object({ profileId: profileIdSchema }),
+		response: z.null(),
+	},
+	account_add_begin: { request: z.undefined(), response: z.null() },
+	account_add_cancel: { request: z.undefined(), response: z.null() },
+	account_add_in_progress: { request: z.undefined(), response: z.boolean() },
+	account_remove: {
+		request: z.object({ profileId: profileIdSchema }),
+		response: profileIdSchema.nullable(),
+	},
+	account_set_profile: {
+		request: z.object({
+			profileId: profileIdSchema,
+			name: z.string().nullable(),
+			avatar: z.string().nullable(),
+		}),
+		response: z.null(),
+	},
+	recaptcha_first_party_enabled: {
+		request: z.undefined(),
+		response: z.boolean(),
+	},
+	mint_recaptcha_token: {
+		request: z.object({
+			action: z.enum([
+				"sign_up",
+				"login",
+				"forgot_password",
+				"report",
+				"decision_appeal",
+				"device_key_registration",
+			]),
+		}),
+		response: z.string().min(1),
+	},
+	current_session: {
+		request: z.undefined(),
+		response: z.object({
+			profileId: z.int().nonnegative().nullable(),
+			expiresAt: z.int().nonnegative().nullable(),
+			stale: z.boolean(),
+		}),
+	},
+	set_app_active: {
+		request: z.object({ active: z.boolean() }),
+		response: z.null(),
+	},
+} satisfies Record<string, { request: z.ZodType; response: z.ZodType }>;
+
+export async function callMethod<T extends keyof typeof methods>(
+	method: T,
+	...args: undefined extends z.infer<(typeof methods)[T]["request"]>
+		? [data?: z.infer<(typeof methods)[T]["request"]>]
+		: [data: z.infer<(typeof methods)[T]["request"]>]
+): Promise<z.infer<(typeof methods)[T]["response"]>> {
+	type Result = z.infer<(typeof methods)[T]["response"]>;
+	if (__DEMO__) {
+		return methods[method].response.parse(demoCallMethod(method)) as Result;
+	}
+	try {
+		return methods[method].response.parse(
+			await invoke(method, args[0]),
+		) as Result;
+	} catch (error) {
+		const kind = blockedKindOf(asAppError(error)?.kind);
+		if (kind !== undefined) {
+			markRequestBlocked({ kind });
+		}
+		throw error;
+	}
+}
+
+export function markRequestBlocked({
+	kind,
+}: {
+	kind: RequestBlockKind;
+}): boolean {
+	if (requestBlockedAlertState.disable) return false;
+	requestBlockedAlertState.open = true;
+	requestBlockedAlertState.kind = kind;
+	return true;
+}
+
+export function blockedKindOf(
+	kind: ApiErrorKind | undefined,
+): RequestBlockKind | undefined {
+	if (kind === "RequestBlocked") return "cloudflare";
+	if (kind === "NetworkBlocked") return "network";
+	return undefined;
+}
+
+export function asBanned(error: unknown): BanInfo | null {
+	const parsed = z
+		.object({ kind: z.literal("Banned"), message: banInfoSchema })
+		.safeParse(error);
+	return parsed.success ? parsed.data.message : null;
+}
+
+export function asAccountStatusError(
+	error: unknown,
+): AccountStatusError | null {
+	const parsed = z
+		.object({ kind: z.literal("Api"), message: accountStatusErrorSchema })
+		.safeParse(error);
+	return parsed.success ? parsed.data.message : null;
+}
+
+export function asAppError(error: unknown) {
+	const { data, success } = z
+		.object({
+			kind: z.enum(apiErrorKinds),
+			message: z
+				.string()
+				.or(z.object({ code: z.number(), message: z.string() }))
+				.or(
+					z.object({
+						reason: z.string(),
+						detail: z.string().nullish(),
+					}),
+				)
+				.optional(),
+		})
+		.safeParse(error);
+	if (success) {
+		let prettyMessage: string;
+		if (data.kind === "Connect") {
+			prettyMessage = connectionFailedMessage;
+		} else if (typeof data.message === "string") {
+			prettyMessage = summarizeServerMessage(data.message);
+		} else if (data.message && "code" in data.message) {
+			const { code, message } = data.message;
+			prettyMessage = `Error ${code}: ${summarizeServerMessage(message)}`;
+		} else {
+			prettyMessage =
+				messagelessMessages[data.kind] ?? unknownErrorMessage;
+		}
+		return { ...data, prettyMessage };
+	}
+}
+
+export function errorKindOf(error: unknown): ApiErrorKind | null {
+	return error instanceof ApiError
+		? error.kind
+		: (asAppError(error)?.kind ?? null);
+}
+
+export function uploadRefusalMessage({
+	error,
+	limitLabel,
+}: {
+	error: unknown;
+	limitLabel: string;
+}): string | null {
+	const kind = errorKindOf(error);
+	if (kind === "ContentTooLarge" || httpStatusOf(error) === 413) {
+		return `Larger than the ${limitLabel} limit`;
+	}
+	if (kind !== "Media") return null;
+	const detail = asAppError(error)?.message;
+	return typeof detail === "string" && detail !== "" ? detail : null;
+}
+
+export function summarizeServerMessage(message: string): string {
+	const summary = summariseNonJson(message);
+	if (summary.nonJson !== "html") {
+		return capText(message, maxPrettyMessageChars);
+	}
+	return summary.title === undefined
+		? "The server returned a web page instead of data"
+		: `The server returned a web page: "${summary.title}"`;
+}

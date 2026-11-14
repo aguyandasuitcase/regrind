@@ -1,0 +1,44 @@
+<script lang="ts">
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import {
+		type BooleanPreference,
+		preferencesLoaded,
+		preferencesSnapshot,
+		setPreferences,
+	} from "#lib/app-data/preferences.svelte.ts";
+	import SettingsSwitchRow from "#lib/components/settings/SettingsSwitchRow.svelte";
+
+	let {
+		preference,
+		title,
+		description,
+		icon,
+		disabled = false,
+	}: {
+		preference: BooleanPreference;
+		title: string;
+		description: string;
+		icon?: import("svelte").Snippet;
+		disabled?: boolean;
+	} = $props();
+
+	let pending = $state<boolean | null>(null);
+	const value = $derived(pending ?? preferencesSnapshot()[preference]);
+</script>
+
+<SettingsSwitchRow
+	{title}
+	{description}
+	{icon}
+	disabled={disabled || !preferencesLoaded()}
+	bind:checked={
+		() => value,
+		(newValue: boolean) => {
+			pending = newValue;
+			setPreferences({ [preference]: newValue }).catch((error) => {
+				pending = null;
+				showErrorToast({ label: "Failed to save preferences", error });
+			});
+		}
+	}
+/>

@@ -1,0 +1,76 @@
+<script lang="ts">
+	import ArrowsClockwiseIcon from "phosphor-svelte/lib/ArrowsClockwiseIcon";
+	import { onMount } from "svelte";
+
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import SettingsSwitchRow from "#lib/components/settings/SettingsSwitchRow.svelte";
+	import { addonInstallerAvailable } from "#lib/updates/addon.svelte.ts";
+	import {
+		updatesSelfManaged,
+		updatesUnsupportedReason,
+	} from "#lib/updates/capability.svelte.ts";
+	import {
+		automaticChecksSetting,
+		checkAfterOptIn,
+		manualCheckOffered,
+	} from "#lib/updates/update-checks.ts";
+	import {
+		automaticChecksEnabled,
+		hydrateUpdateSettings,
+		saveAutomaticChecks,
+	} from "#lib/updates/update-settings.svelte.ts";
+	import CheckForUpdatesButton from "./CheckForUpdatesButton.svelte";
+
+	let pending = $state<boolean | null>(null);
+	const stored = $derived(automaticChecksEnabled());
+	const value = $derived(pending ?? stored ?? false);
+	const addonAvailable = addonInstallerAvailable();
+	const selfManaged = $derived(updatesSelfManaged());
+	const setting = $derived(
+		automaticChecksSetting({
+			selfManaged,
+			unsupportedReason: updatesUnsupportedReason(),
+			addonAvailable,
+		}),
+	);
+
+	onMount(() => {
+		if (setting.blocked) return;
+		hydrateUpdateSettings().catch((error: unknown) => {
+			showErrorToast({ label: "Couldn't read update settings", error });
+		});
+	});
+</script>
+
+<SettingsSwitchRow
+	title={setting.title}
+	description={setting.description}
+	disabled={setting.blocked || stored === null}
+	bind:checked={
+		() => value,
+		(newValue: boolean) => {
+			pending = newValue;
+			saveAutomaticChecks(newValue)
+				.then((autoCheck) => {
+					pending = null;
+					if (autoCheck) {
+						void checkAfterOptIn({ selfManaged, addonAvailable });
+					}
+				})
+				.catch((error: unknown) => {
+					pending = null;
+					showErrorToast({
+						label: "Couldn't save update settings",
+						error,
+					});
+				});
+		}
+	}
+>
+	{#snippet icon()}
+		<ArrowsClockwiseIcon weight="fill" />
+	{/snippet}
+</SettingsSwitchRow>
+{#if manualCheckOffered({ selfManaged, addonAvailable })}
+	<CheckForUpdatesButton {selfManaged} {addonAvailable} />
+{/if}

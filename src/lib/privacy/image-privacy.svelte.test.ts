@@ -1,0 +1,91 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+	preferences: { discreetImages: false, privacyMode: true },
+	save: vi.fn(),
+	error: vi.fn(),
+}));
+vi.mock("#lib/api/error-toast.ts", () => ({ showErrorToast: mocks.error }));
+vi.mock("#lib/app-data/preferences.svelte.ts", () => ({
+	preferencesLoaded: () => true,
+	preferencesSnapshot: () => mocks.preferences,
+	setPreferences: mocks.save,
+}));
+
+import {
+	imagePrivacy,
+	imagesHidden,
+	setPrivacyFeature,
+	toggleImagePrivacy,
+} from "./image-privacy.svelte";
+
+describe("image privacy toggling", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		imagePrivacy.override = null;
+		imagePrivacy.pending = false;
+		mocks.preferences.discreetImages = false;
+		mocks.preferences.privacyMode = true;
+		mocks.save.mockImplementation(
+			(values: { discreetImages: boolean; privacyMode?: boolean }) => {
+				Object.assign(mocks.preferences, values);
+				return Promise.resolve();
+			},
+		);
+	});
+
+	it("hides immediately and persists both directions", async () => {
+		const saved = toggleImagePrivacy();
+		expect(imagePrivacy.override).toBe(true);
+		await saved;
+		expect(mocks.preferences.discreetImages).toBe(true);
+		await toggleImagePrivacy();
+		expect(mocks.preferences.discreetImages).toBe(false);
+	});
+
+	it("keeps images hidden if persistence fails", async () => {
+		mocks.save.mockRejectedValue(new Error("disk unavailable"));
+		await toggleImagePrivacy();
+		expect(imagePrivacy.override).toBe(true);
+		expect(imagePrivacy.pending).toBe(false);
+		expect(mocks.error).toHaveBeenCalledOnce();
+	});
+
+	it("does not reveal images until the save succeeds", async () => {
+		mocks.preferences.discreetImages = true;
+		mocks.save.mockRejectedValue(new Error("disk unavailable"));
+		await toggleImagePrivacy();
+		expect(mocks.preferences.discreetImages).toBe(true);
+	});
+
+	it("ignores overlapping button and gesture events", async () => {
+		let finish!: () => void;
+		mocks.save.mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const first = toggleImagePrivacy();
+		await toggleImagePrivacy();
+		expect(mocks.save).toHaveBeenCalledOnce();
+		finish();
+		await first;
+	});
+
+	it("leaves images alone while the feature is off", async () => {
+		mocks.preferences.privacyMode = false;
+		await toggleImagePrivacy();
+		expect(mocks.save).not.toHaveBeenCalled();
+		expect(imagesHidden()).toBe(false);
+	});
+
+	it("hides at once when the feature is turned on, shows all when off", async () => {
+		mocks.preferences.privacyMode = false;
+		await setPrivacyFeature(true);
+		expect(imagesHidden()).toBe(true);
+		await setPrivacyFeature(false);
+		expect(imagesHidden()).toBe(false);
+	});
+});

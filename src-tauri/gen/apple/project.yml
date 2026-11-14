@@ -1,0 +1,103 @@
+name: regrind
+options:
+  bundleIdPrefix: org.regrind.ios
+  deploymentTarget:
+    iOS: 14.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: ReGrind
+      PRODUCT_BUNDLE_IDENTIFIER: org.regrind.ios
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  regrind_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # Only the active configuration's libapp.a should reach the bundle; globbing
+      # both debug/ and release/ makes two copy commands fight over the same path.
+      - path: Externals
+        excludes:
+          - "*/debug"
+      - path: regrind_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+    info:
+      path: regrind_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        NSLocationWhenInUseUsageDescription: ReGrind uses your location to show where you are on the map and to share your location in chats.
+        NSPhotoLibraryAddUsageDescription: ReGrind saves photos and videos you download from chats to your Photos library.
+        NSMicrophoneUsageDescription: ReGrind uses your microphone for the voice messages you send in chats and for video calls.
+        NSCameraUsageDescription: ReGrind uses your camera for video calls.
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0.3"
+    entitlements:
+      path: regrind_iOS/regrind_iOS.entitlements
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      base:
+        # Every local build carries the DEV-badged icon set (bun run gen:icons
+        # writes it), so a sideload is told apart from the plain public release.
+        # The release is release-config too, so it can't opt out by
+        # configuration: scripts/ios-release-ipa.sh forces AppIcon for its build.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
+        # Discreet icons, drawn by scripts/gen-app-icons.ts
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIcon-Weather-Blue AppIcon-Weather-Teal AppIcon-Weather-Green AppIcon-Weather-Purple AppIcon-Weather-Red AppIcon-Weather-Orange AppIcon-Weather-Graphite AppIcon-Notes-Blue AppIcon-Notes-Teal AppIcon-Notes-Green AppIcon-Notes-Purple AppIcon-Notes-Red AppIcon-Notes-Orange AppIcon-Notes-Graphite AppIcon-Calculator-Blue AppIcon-Calculator-Teal AppIcon-Calculator-Green AppIcon-Calculator-Purple AppIcon-Calculator-Red AppIcon-Calculator-Orange AppIcon-Calculator-Graphite AppIcon-Camera-Blue AppIcon-Camera-Teal AppIcon-Camera-Green AppIcon-Camera-Purple AppIcon-Camera-Red AppIcon-Camera-Orange AppIcon-Camera-Graphite AppIcon-Clock-Blue AppIcon-Clock-Teal AppIcon-Clock-Green AppIcon-Clock-Purple AppIcon-Clock-Red AppIcon-Clock-Orange AppIcon-Clock-Graphite AppIcon-Chat-Blue AppIcon-Chat-Teal AppIcon-Chat-Green AppIcon-Chat-Purple AppIcon-Chat-Red AppIcon-Chat-Orange AppIcon-Chat-Graphite AppIcon-Photos-Blue AppIcon-Photos-Teal AppIcon-Photos-Green AppIcon-Photos-Purple AppIcon-Photos-Red AppIcon-Photos-Orange AppIcon-Photos-Graphite
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64 
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - framework: libapp.a
+        embed: false
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: bun tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a

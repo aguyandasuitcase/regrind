@@ -1,0 +1,421 @@
+<script lang="ts">
+	import FacebookLogoIcon from "phosphor-svelte/lib/FacebookLogoIcon";
+	import InstagramLogoIcon from "phosphor-svelte/lib/InstagramLogoIcon";
+	import XLogoIcon from "phosphor-svelte/lib/XLogoIcon";
+	import { untrack } from "svelte";
+	import { toast } from "svelte-sonner";
+	import { expoOut } from "svelte/easing";
+	import { fly } from "svelte/transition";
+
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import {
+		isTagKeyOfferedNow,
+		isTribeOfferedNow,
+	} from "#lib/api/feature-flags-state.svelte.ts";
+	import { ProfileModerationError } from "#lib/api/users/profile-moderation.ts";
+	import {
+		type ProfileUpdate,
+		setProfilePhotos,
+		updateOwnProfile,
+	} from "#lib/api/users/profiles.ts";
+	import SectionHeader from "#lib/components/settings/SectionHeader.svelte";
+	import SettingsGroup from "#lib/components/settings/SettingsGroup.svelte";
+	import ProgressiveBlur from "#lib/components/shared/ProgressiveBlur.svelte";
+	import { Button } from "#lib/components/ui/button/index.ts";
+	import { WheelPicker } from "#lib/components/ui/carousel/index.ts";
+	import { Spinner } from "#lib/components/ui/spinner/index.ts";
+	import {
+		type Profile,
+		PROFILE_PHOTO_AWAITING_REVIEW,
+	} from "#lib/model/users/profiles.ts";
+	import { deepEqual } from "#lib/util/deep-equal.ts";
+	import { bottomChrome } from "#lib/util/screen-chrome.svelte.ts";
+	import type { Gender } from "#lib/model/users/genders.ts";
+	import type { Pronoun } from "#lib/model/users/pronouns.ts";
+	import type { ProfileTagsResponse } from "#lib/model/users/tags.ts";
+	import ComboField from "./fields/ComboField.svelte";
+	import DateField from "./fields/DateField.svelte";
+	import Field from "./fields/Field.svelte";
+	import HeightField from "./fields/HeightField.svelte";
+	import MultilineField from "./fields/MultilineField.svelte";
+	import MultiSelectField from "./fields/MultiSelectField.svelte";
+	import SelectField from "./fields/SelectField.svelte";
+	import SocialField from "./fields/SocialField.svelte";
+	import SwitchRow from "./fields/SwitchRow.svelte";
+	import TextField from "./fields/TextField.svelte";
+	import WeightField from "./fields/WeightField.svelte";
+	import {
+		ageRange,
+		bodyTypeOptions,
+		buildGenderOptions,
+		buildPronounOptions,
+		buildTagOptions,
+		ethnicityOptions,
+		fieldLimits,
+		healthOptions,
+		hivOptions,
+		lookingForOptions,
+		maxProfileGenders,
+		maxProfilePronouns,
+		maxProfileTags,
+		meetAtOptions,
+		nsfwOptions,
+		positionOptions,
+		relationshipOptions,
+		tribeOptions,
+		vaccineOptions,
+	} from "./options";
+	import ProfilePicturesUpload from "./ProfilePicturesUpload.svelte";
+
+	let {
+		profile,
+		genders,
+		pronouns,
+		tags,
+		ourProfileId,
+	}: {
+		profile: Profile;
+		genders: Gender[];
+		pronouns: Pronoun[];
+		tags: ProfileTagsResponse;
+		ourProfileId: number;
+	} = $props();
+
+	const {
+		options: genderOptions,
+		resolveLabel: resolveGenderLabel,
+		exclusions: genderExclusions,
+	} = untrack(() => buildGenderOptions(genders));
+	const { options: pronounOptions, resolveLabel: resolvePronounLabel } =
+		untrack(() => buildPronounOptions(pronouns));
+	const { options: tagOptions, resolveLabel: resolveTagLabel } = untrack(() =>
+		buildTagOptions({ tags, isOffered: isTagKeyOfferedNow }),
+	);
+
+	const initial = untrack(() => $state.snapshot(profile));
+
+	let form = $state({
+		displayName: initial.displayName ?? "",
+		aboutMe: initial.aboutMe ?? "",
+		profileTags: initial.profileTags.filter(isTagKeyOfferedNow),
+		genderIds: [...(initial.genders ?? [])],
+		pronounIds: [...(initial.pronouns ?? [])],
+		age: initial.age ?? ageRange.min,
+		showAge: initial.showAge,
+		sexualPosition: initial.sexualPosition ?? null,
+		showPosition: initial.showPosition,
+		height: initial.height,
+		weightKg:
+			initial.weight === null
+				? null
+				: Math.round(initial.weight / 100) / 10,
+		bodyType: initial.bodyType,
+		ethnicity: initial.ethnicity,
+		relationshipStatus: initial.relationshipStatus,
+		showTribes: initial.showTribes,
+		grindrTribes: initial.grindrTribes.filter(isTribeOfferedNow),
+		tribesImInto: [...(initial.tribesImInto ?? [])],
+		lookingFor: [...initial.lookingFor],
+		meetAt: [...(initial.meetAt ?? [])],
+		nsfw: initial.nsfw,
+		hivStatus: initial.hivStatus,
+		lastTestedDate: initial.lastTestedDate,
+		sexualHealth: [...initial.sexualHealth],
+		vaccineIds: [...(initial.vaccines ?? [])],
+		instagram: initial.socialNetworks.instagram?.userId ?? null,
+		twitter: initial.socialNetworks.twitter?.userId ?? null,
+		facebook: initial.socialNetworks.facebook?.userId ?? null,
+		medias: initial.medias.map((media) => ({
+			mediaHash: media.mediaHash,
+			takenOnGrindr: media.takenOnGrindr ?? false,
+			pending: media.state === PROFILE_PHOTO_AWAITING_REVIEW,
+		})),
+	});
+
+	let saving = $state(false);
+	const aboutMeOverLimit = $derived(
+		form.aboutMe.length > fieldLimits.aboutMe,
+	);
+
+	let savedForm = $state.raw($state.snapshot(form));
+	const dirty = $derived(!deepEqual($state.snapshot(form), savedForm));
+
+	async function save() {
+		if (saving || aboutMeOverLimit || !dirty) return;
+		saving = true;
+		const sent = $state.snapshot(form);
+		const body = {
+			displayName: sent.displayName.trim() || null,
+			aboutMe: sent.aboutMe.trim() || null,
+			genders: sent.genderIds,
+			pronouns: sent.pronounIds,
+			age: sent.age,
+			showAge: sent.showAge,
+			sexualPosition: sent.sexualPosition,
+			showPosition: sent.showPosition,
+			height: sent.height,
+			weight:
+				sent.weightKg === null
+					? null
+					: Math.round(sent.weightKg * 1000),
+			bodyType: sent.bodyType,
+			ethnicity: sent.ethnicity,
+			relationshipStatus: sent.relationshipStatus,
+			showTribes: sent.showTribes,
+			grindrTribes: sent.grindrTribes,
+			tribesImInto: sent.tribesImInto,
+			lookingFor: sent.lookingFor,
+			meetAt: sent.meetAt,
+			nsfw: sent.nsfw,
+			hivStatus: sent.hivStatus,
+			lastTestedDate: sent.lastTestedDate,
+			sexualHealth: sent.sexualHealth,
+			vaccines: sent.vaccineIds,
+			socialNetworks: {
+				instagram: sent.instagram
+					? { userId: sent.instagram }
+					: undefined,
+				twitter: sent.twitter ? { userId: sent.twitter } : undefined,
+				facebook: sent.facebook ? { userId: sent.facebook } : undefined,
+			},
+			approximateDistance: initial.approximateDistance,
+			showDistance: initial.showDistance,
+			profileTags: sent.profileTags,
+		} satisfies ProfileUpdate;
+		const currentHashes = sent.medias.map((media) => media.mediaHash);
+		const savedHashes = savedForm.medias.map((media) => media.mediaHash);
+		const photosChanged =
+			currentHashes.length !== savedHashes.length ||
+			currentHashes.some((hash, index) => hash !== savedHashes[index]);
+		try {
+			await updateOwnProfile({
+				cacheProfileId: ourProfileId,
+				profile: body,
+			});
+			// The photo list is its own endpoint; the profile update carries no
+			// photos. Removed photos stay in Previous uploads.
+			if (photosChanged) {
+				await setProfilePhotos({
+					cacheProfileId: ourProfileId,
+					mediaHashes: currentHashes,
+					takenOnGrindrHashes: sent.medias
+						.filter((media) => media.takenOnGrindr)
+						.map((media) => media.mediaHash),
+				});
+			}
+			savedForm = sent;
+			toast.success("Profile updated");
+		} catch (error) {
+			if (error instanceof ProfileModerationError) {
+				const detail = error.rejected
+					.map((r) => `${r.field}: ${r.terms.join(", ")}`)
+					.join("; ");
+				toast.error("Couldn't save — these terms aren't allowed", {
+					description: detail || undefined,
+				});
+			} else {
+				showErrorToast({ label: "Failed to update profile", error });
+			}
+		} finally {
+			saving = false;
+		}
+	}
+</script>
+
+<form
+	data-slot="profile-form"
+	class="flex flex-col"
+	onsubmit={(event) => event.preventDefault()}
+>
+	<fieldset disabled={saving} class="contents">
+		<SectionHeader>Photos</SectionHeader>
+		<SettingsGroup divider="none">
+			<div class="p-3">
+				<ProfilePicturesUpload
+					bind:medias={form.medias}
+					{ourProfileId}
+				/>
+			</div>
+		</SettingsGroup>
+
+		<SectionHeader>About you</SectionHeader>
+		<SettingsGroup divider="full">
+			<TextField
+				label="Display name"
+				bind:value={form.displayName}
+				maxLength={fieldLimits.displayName}
+				placeholder="Everyone will see this on the grid..."
+			/>
+			<MultilineField
+				label="About me"
+				bind:value={form.aboutMe}
+				maxLength={fieldLimits.aboutMe}
+				placeholder="Tell people who you are and what you're looking for (not what you're not looking for)"
+			/>
+			<ComboField
+				label="Tags"
+				bind:values={form.profileTags}
+				options={tagOptions}
+				resolveLabel={resolveTagLabel}
+				max={maxProfileTags}
+				searchPlaceholder="Search tags..."
+			/>
+		</SettingsGroup>
+
+		<SectionHeader>Identity</SectionHeader>
+		<SettingsGroup divider="full">
+			<ComboField
+				label="Gender"
+				bind:values={form.genderIds}
+				options={genderOptions}
+				resolveLabel={resolveGenderLabel}
+				exclude={genderExclusions}
+				max={maxProfileGenders}
+				searchPlaceholder="Search genders..."
+			/>
+			<ComboField
+				label="Pronouns"
+				bind:values={form.pronounIds}
+				options={pronounOptions}
+				resolveLabel={resolvePronounLabel}
+				max={maxProfilePronouns}
+				searchPlaceholder="Search pronouns..."
+			/>
+		</SettingsGroup>
+
+		<SectionHeader>Stats</SectionHeader>
+		<SettingsGroup divider="full">
+			<Field label="Age">
+				{#snippet picker({ labelId })}
+					<WheelPicker
+						bind:value={form.age}
+						min={ageRange.min}
+						max={ageRange.max}
+						unit="years"
+						disabled={saving}
+						aria-labelledby={labelId}
+					/>
+				{/snippet}
+			</Field>
+			<SwitchRow label="Show my age" bind:checked={form.showAge} />
+			<SelectField
+				label="Position"
+				bind:value={form.sexualPosition}
+				options={positionOptions}
+			/>
+			<SwitchRow
+				label="Show my position"
+				bind:checked={form.showPosition}
+			/>
+			<HeightField bind:value={form.height} />
+			<WeightField bind:value={form.weightKg} />
+			<SelectField
+				label="Body type"
+				bind:value={form.bodyType}
+				options={bodyTypeOptions}
+			/>
+			<SelectField
+				label="Ethnicity"
+				bind:value={form.ethnicity}
+				options={ethnicityOptions}
+			/>
+			<SelectField
+				label="Relationship status"
+				bind:value={form.relationshipStatus}
+				options={relationshipOptions}
+			/>
+		</SettingsGroup>
+
+		<SectionHeader>Preferences</SectionHeader>
+		<SettingsGroup divider="full">
+			<SwitchRow label="Show my tribes" bind:checked={form.showTribes} />
+			<MultiSelectField
+				label="My tribes"
+				bind:values={form.grindrTribes}
+				options={tribeOptions}
+			/>
+			<MultiSelectField
+				label="Tribes I'm into"
+				bind:values={form.tribesImInto}
+				options={tribeOptions}
+			/>
+			<MultiSelectField
+				label="Looking for"
+				bind:values={form.lookingFor}
+				options={lookingForOptions}
+			/>
+			<MultiSelectField
+				label="Meet at"
+				bind:values={form.meetAt}
+				options={meetAtOptions}
+			/>
+			<SelectField
+				label="Accept NSFW pics"
+				bind:value={form.nsfw}
+				options={nsfwOptions}
+			/>
+		</SettingsGroup>
+
+		<SectionHeader>Health</SectionHeader>
+		<SettingsGroup divider="full">
+			<SelectField
+				label="HIV status"
+				bind:value={form.hivStatus}
+				options={hivOptions}
+			/>
+			<DateField label="Last tested" bind:value={form.lastTestedDate} />
+			<MultiSelectField
+				label="Sexual health practices"
+				bind:values={form.sexualHealth}
+				options={healthOptions}
+			/>
+			<MultiSelectField
+				label="Vaccines"
+				bind:values={form.vaccineIds}
+				options={vaccineOptions}
+			/>
+		</SettingsGroup>
+
+		<SectionHeader>Social</SectionHeader>
+		<SettingsGroup divider="full">
+			<SocialField
+				label="Instagram"
+				bind:value={form.instagram}
+				icon={InstagramLogoIcon}
+			/>
+			<SocialField label="X" bind:value={form.twitter} icon={XLogoIcon} />
+			<SocialField
+				label="Facebook"
+				bind:value={form.facebook}
+				icon={FacebookLogoIcon}
+			/>
+		</SettingsGroup>
+	</fieldset>
+
+	{#if dirty}
+		<div
+			class="sticky bottom-(--content-pb) z-10 -mx-4 mt-4"
+			transition:fly={{ y: 80, duration: 300, easing: expoOut }}
+			{@attach bottomChrome}
+		>
+			<ProgressiveBlur
+				direction="bottomToTop"
+				class="relative px-4 pt-6 pb-3"
+				bgClass="bg-linear-to-t from-background via-background to-transparent"
+			>
+				<Button
+					type="submit"
+					size="lg"
+					class="h-12 w-full text-base"
+					disabled={saving || aboutMeOverLimit}
+					onclick={() => save()}
+				>
+					{#if saving}
+						<Spinner class="size-5" />
+					{/if}
+					Save changes
+				</Button>
+			</ProgressiveBlur>
+		</div>
+	{/if}
+</form>

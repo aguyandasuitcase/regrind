@@ -1,0 +1,687 @@
+/* eslint max-lines: ["error", { "max": 680, "skipBlankLines": true, "skipComments": true }] -- Keep the fetch snapshot beside its reconciliation. */
+
+import { createContext } from "svelte";
+import { toast } from "svelte-sonner";
+
+import { showErrorToast } from "#lib/api/error-toast.ts";
+import { errorUrn } from "#lib/api/error-urn.ts";
+import { markConversationAsRead } from "#lib/api/messaging/conversations.ts";
+import {
+	ConversationUnavailableError,
+	reactToMessage,
+	sendMessage,
+} from "#lib/api/messaging/messages.ts";
+import { getPreferences } from "#lib/app-data/preferences.svelte.ts";
+import {
+	deletedConversationIds,
+	deletedMessageIds,
+} from "#lib/chat/message-deleted.ts";
+import { withRegionGrant } from "#lib/entitlements/expiring-media-entitlement.ts";
+import { previewFromMessage } from "#lib/model/messaging/message-preview.ts";
+import { reconciler } from "#lib/util/reconcile.ts";
+import { stopListening } from "#lib/ws.svelte.ts";
+import type { ConversationsState } from "#lib/chat/conversations-state.svelte.ts";
+import type {
+	ApiResponseMessage,
+	MessageDraft,
+} from "#lib/model/messaging/messages.ts";
+import type { ChatV1MessageDeletedEventPayload } from "#lib/ws.svelte.ts";
+import { subscribeConversationRealtime } from "./conversation-realtime";
+import { DynamicMessagesRefresh } from "./dynamic-refresh";
+import {
+	matchPendingEcho,
+	mergeServerMessages,
+	type OptimisticMessage,
+	previewedMessage,
+	removeDuplicateMessages,
+	sentMessages,
+} from "./merge-messages";
+import { getConversation } from "./messages";
+import {
+	lockSharedAlbumInPlace,
+	recordMediaViewsInPlace,
+	unsendInPlace,
+} from "./optimistic-edits";
+import { ReadReceiptQueue } from "./read-receipts";
+
+export type { OptimisticMessage };
+
+export type ConversationProfile = Awaited<
+	ReturnType<typeof getConversation>
+>["profile"];
+
+function asSent(message: ApiResponseMessage): OptimisticMessage {
+	return { ...message, status: "sent" };
+}
+
+type MessageDelivery = {
+	tempId: string;
+	message: MessageDraft["outbound"];
+	replyToMessageId?: string;
+};
+
+export class ConversationState {
+	messages: OptimisticMessage[] = $state([]);
+	profile: ConversationProfile | null = $state(null);
+	pageKey: string | null = $state(null);
+	loading = $state(true);
+	loadingMore = $state(false);
+	refreshing = $state(false);
+	error: Error | null = $state(null);
+	lastReadTimestamp: number | null = $state(null);
+	#focusComposer: (() => void) | null = null;
+	// Resolved from the stored id on every read, so unsending, deleting or
+	// failing to load the target drops the quote with no clearing code.
+	readonly replyTo: ApiResponseMessage | null = $derived.by(() => {
+		const messageId = this.#conversations.drafts.replyTo(
+			this.conversationId,
+		);
+		if (messageId === null) return null;
+		const target = this.messages.find(
+			(message) => message.messageId === messageId,
+		);
+		return target && !target.unsent ? target : null;
+	});
+
+	readonly conversationId: string;
+	readonly ourProfileId: number;
+
+	/** Is the other side typing right now? */
+	get typing(): boolean {
+		return this.#conversations.typing.isTyping(this.conversationId);
+	}
+
+	#conversations: ConversationsState;
+	#releaseActive: () => void;
+	#readReceipts = new ReadReceiptQueue({
+		markRead: (messageId) => this.#markRead(messageId),
+	});
+	#unsubscribeReconcile: () => void;
+	readonly dynamicRefresh: DynamicMessagesRefresh;
+
+	constructor({
+		conversationId,
+		ourProfileId,
+		conversations,
+	}: {
+		conversationId: string;
+		ourProfileId: number;
+		conversations: ConversationsState;
+	}) {
+		this.conversationId = conversationId;
+		this.ourProfileId = ourProfileId;
+		this.#conversations = conversations;
+		this.#releaseActive = conversations.setActive(conversationId);
+		void this.#initialLoad();
+
+		this.#unsubscribeReconcile = reconciler.subscribe(() =>
+			this.#reconcileMessages(),
+		);
+
+		this.#wsPromises.push(
+			...subscribeConversationRealtime({
+				conversationId,
+				alive: () => !this.#destroyed,
+				onMessageSent: (message) => this.#handleMessageSent(message),
+				onReadReceipt: ({ profileId, timestamp }) => {
+					if (profileId === this.ourProfileId) return;
+					if (this.#advanceLastRead(timestamp)) this.#syncCache();
+				},
+				onStale: () => {
+					void this.#reconcileMessages();
+				},
+				onMessagesDeleted: (payload) =>
+					this.#handleMessageDeleted(payload),
+			}),
+		);
+		this.dynamicRefresh = new DynamicMessagesRefresh({
+			conversationId,
+			messages: () => this.messages,
+			commit: (messages) => this.#commitMessages(messages),
+			reconcile: () => this.#reconcileMessages(),
+			paused: () => this.error !== null,
+		});
+	}
+
+	#wsPromises: Promise<() => void>[] = [];
+
+	#destroyed = false;
+	#refreshRequestedSinceFetchStart = false;
+	get destroyed(): boolean {
+		return this.#destroyed;
+	}
+	destroy(): void {
+		if (this.#destroyed) return;
+		this.#destroyed = true;
+		this.#releaseActive();
+		stopListening(this.#wsPromises);
+		this.#wsPromises = [];
+		this.#unsubscribeReconcile();
+		this.#readReceipts.destroy();
+		this.dynamicRefresh.destroy();
+	}
+
+	/**
+	 * Fold an arriving message into the list: the server's version of one we
+	 * already show, the echo of one we just sent, or a new one at the top.
+	 */
+	#handleMessageSent(incoming: ApiResponseMessage): void {
+		const existing = this.messages.find(
+			(m) => m.messageId === incoming.messageId,
+		);
+		if (existing) {
+			const moved = existing.timestamp !== incoming.timestamp;
+			Object.assign(existing, incoming, { status: "sent" as const });
+			if (moved) this.#resortNewestFirst();
+			this.#syncCache();
+			return;
+		}
+
+		if (incoming.senderId === this.ourProfileId) {
+			const pending = matchPendingEcho({
+				messages: this.messages,
+				incoming,
+			});
+			if (pending) {
+				this.#adoptServerVersion({
+					message: pending,
+					server: incoming,
+				});
+				return;
+			}
+		}
+
+		const newestTimestamp = this.messages.reduce(
+			(max, m) => Math.max(max, m.timestamp),
+			Number.NEGATIVE_INFINITY,
+		);
+		if (incoming.timestamp < newestTimestamp) return;
+
+		const msg: OptimisticMessage = { ...incoming, status: "sent" };
+		this.messages = [msg, ...this.messages];
+		this.#syncCache();
+		if (msg.senderId !== this.ourProfileId) {
+			void this.reportRead({
+				messageId: msg.messageId,
+				timestamp: msg.timestamp,
+			});
+		}
+	}
+
+	/**
+	 * Drop the messages a delete names. The payload is undocumented, so we only
+	 * trust ids we can match against what we hold, and refetch whenever the
+	 * event leaves us unable to point at anything — including when it names no
+	 * conversation, since a delete we ignore would leave a message on screen
+	 * that no longer exists.
+	 */
+	#handleMessageDeleted(
+		payload: ChatV1MessageDeletedEventPayload["payload"],
+	): void {
+		const conversationIds = deletedConversationIds(payload);
+		if (
+			conversationIds.length > 0 &&
+			!conversationIds.includes(this.conversationId)
+		) {
+			return;
+		}
+
+		const removed = deletedMessageIds(payload).filter((messageId) =>
+			this.messages.some((message) => message.messageId === messageId),
+		);
+		for (const messageId of removed) this.remove(messageId);
+		if (removed.length === 0) void this.#reconcileMessages();
+	}
+
+	async #reconcileMessages(): Promise<void> {
+		if (this.#destroyed) return;
+		if (this.loading || this.refreshing) {
+			this.#refreshRequestedSinceFetchStart = true;
+			return;
+		}
+		this.refreshing = true;
+		this.#refreshRequestedSinceFetchStart = false;
+		const localIdsAtFetchStart = this.messages.map((m) => m.messageId);
+		try {
+			const result = await getConversation({
+				conversationId: this.conversationId,
+			});
+			if (this.#destroyed) return;
+
+			this.profile = result.profile;
+			this.error = null;
+
+			const { messages, fresh, changed } = mergeServerMessages({
+				local: this.messages,
+				server: result.messages,
+				localIdsAtFetchStart,
+			});
+
+			this.#advanceLastRead(result.lastReadTimestamp);
+
+			if (!changed) {
+				this.#syncCache();
+				return;
+			}
+
+			this.#commitMessages(messages);
+
+			for (const m of fresh) {
+				if (m.senderId === this.ourProfileId) continue;
+				void this.reportRead({
+					messageId: m.messageId,
+					timestamp: m.timestamp,
+				});
+			}
+		} catch (error) {
+			if (this.#destroyed) return;
+			console.error("Failed to reconcile messages", error);
+			if (error instanceof ConversationUnavailableError) {
+				this.error = error;
+			} else {
+				showErrorToast({
+					label: "Failed to refresh messages",
+					error,
+					onRetry: () => void this.refresh(),
+				});
+			}
+		} finally {
+			this.refreshing = false;
+			this.#runRequestedRefresh();
+		}
+	}
+
+	#commitMessages(messages: OptimisticMessage[]): void {
+		this.messages = messages;
+		this.#updatePreview();
+		this.#syncCache();
+	}
+
+	#runRequestedRefresh(): void {
+		if (!this.#refreshRequestedSinceFetchStart) return;
+		this.#refreshRequestedSinceFetchStart = false;
+		void this.refresh();
+	}
+
+	refresh(): Promise<void> {
+		return this.#reconcileMessages();
+	}
+
+	retry(): void {
+		if (this.#destroyed) return;
+		void this.#initialLoad();
+	}
+
+	async #initialLoad(): Promise<void> {
+		this.error = null;
+		const cached = this.#conversations.getCachedConversation(
+			this.conversationId,
+		);
+		if (cached) {
+			this.messages = cached.messages.map(asSent);
+			this.profile = cached.profile;
+			this.pageKey = cached.pageKey;
+			this.lastReadTimestamp = cached.lastReadTimestamp;
+			this.loading = false;
+			void this.#conversations.markRead(this.conversationId);
+			void this.#reconcileMessages();
+			return;
+		}
+		this.loading = true;
+		try {
+			const result = await getConversation({
+				conversationId: this.conversationId,
+			});
+			void this.#conversations.markRead(this.conversationId);
+			if (this.#destroyed) return;
+			this.messages = removeDuplicateMessages(
+				result.messages.map(asSent),
+			);
+			this.profile = result.profile;
+			this.pageKey = result.pageKey;
+			this.#updatePreview(this.messages.at(0));
+			this.#advanceLastRead(result.lastReadTimestamp);
+			this.#syncCache();
+		} catch (err) {
+			if (this.#destroyed) return;
+			this.error = err instanceof Error ? err : new Error(String(err));
+		} finally {
+			this.loading = false;
+			this.#runRequestedRefresh();
+		}
+	}
+
+	async loadMore({
+		commit = (apply) => apply(),
+	}: { commit?: (apply: () => void) => void } = {}): Promise<void> {
+		if (this.loadingMore || this.pageKey === null) return;
+		this.loadingMore = true;
+		try {
+			const result = await getConversation({
+				conversationId: this.conversationId,
+				pageKey: this.pageKey,
+			});
+			if (this.#destroyed) return;
+			commit(() => {
+				this.messages = removeDuplicateMessages([
+					...this.messages,
+					...result.messages.map(asSent),
+				]);
+				this.pageKey = result.pageKey;
+				this.loadingMore = false;
+				this.#advanceLastRead(result.lastReadTimestamp);
+				this.#syncCache();
+			});
+		} catch (error) {
+			if (this.#destroyed) return;
+			console.error(error);
+			if (error instanceof ConversationUnavailableError) {
+				this.error = error;
+			} else {
+				showErrorToast({
+					label: "Failed to load more messages",
+					error,
+				});
+			}
+		} finally {
+			this.loadingMore = false;
+		}
+	}
+
+	/**
+	 * Hands the composer back the caret the moment a reply is armed, rather than
+	 * leaving it to an effect. iOS only makes room for a keyboard it raised from
+	 * a user-initiated focus: a focus() deferred past the gesture's own task
+	 * still gets the keyboard, but not the viewport shrink that goes with it, so
+	 * visualViewport keeps reporting full height and applyKeyboardInset has
+	 * nothing to compensate for — the swipe's keyboard lands on top of the
+	 * field. Registered by the composer; the last one mounted wins.
+	 */
+	registerComposerFocus(focus: () => void): () => void {
+		this.#focusComposer = focus;
+		return () => {
+			if (this.#focusComposer === focus) this.#focusComposer = null;
+		};
+	}
+
+	setReplyTo(message: ApiResponseMessage): void {
+		this.#conversations.drafts.setReplyTo({
+			conversationId: this.conversationId,
+			messageId: message.messageId,
+		});
+		// Synchronous on purpose — see registerComposerFocus.
+		this.#focusComposer?.();
+	}
+
+	clearReplyTo(): void {
+		this.#conversations.drafts.clearReplyTo(this.conversationId);
+	}
+
+	// One call per batch: the target is read once and cleared once, so every
+	// message of a multi-photo reply quotes it, not just the first.
+	send(drafts: MessageDraft[], { includeReply = true } = {}): void {
+		if (!this.profile) return;
+		const replyToMessage = includeReply ? this.replyTo : null;
+		for (const draft of drafts) this.#sendOne({ draft, replyToMessage });
+		if (replyToMessage) this.clearReplyTo();
+	}
+
+	#sendOne({
+		draft,
+		replyToMessage,
+	}: {
+		draft: MessageDraft;
+		replyToMessage: ApiResponseMessage | null;
+	}): void {
+		const tempId = `pending-${crypto.randomUUID()}`;
+		const optimistic: OptimisticMessage = {
+			...draft.optimistic,
+			messageId: tempId,
+			conversationId: this.conversationId,
+			senderId: this.ourProfileId,
+			timestamp: Date.now(),
+			unsent: false,
+			reactions: [],
+			dynamic: false,
+			replyToMessage,
+			status: "pending" as const,
+		};
+		this.messages = removeDuplicateMessages([optimistic, ...this.messages]);
+		this.#updatePreview(optimistic);
+		void this.#resolveMessage({
+			tempId,
+			message: draft.outbound,
+			replyToMessageId: replyToMessage?.messageId,
+		});
+	}
+
+	async #resolveMessage({
+		tempId,
+		message,
+		replyToMessageId,
+	}: MessageDelivery): Promise<void> {
+		try {
+			// A region-gated refusal grants and sends again, unseen.
+			const toUserId = this.profile!.profileId;
+			const sent = await withRegionGrant(() =>
+				sendMessage({ toUserId, message, replyToMessageId }),
+			);
+			if (this.#destroyed) return;
+			const msg = this.messages.find((m) => m.messageId === tempId);
+			if (msg) {
+				this.#adoptServerVersion({ message: msg, server: sent });
+			} else {
+				this.#syncCache();
+			}
+			void this.#conversations.ensureLoaded(this.conversationId);
+		} catch (error) {
+			const urn = errorUrn(error);
+			console.error(
+				`Failed to send message${urn === null ? "" : ` (${urn})`}`,
+				error,
+			);
+			if (
+				typeof message !== "function" &&
+				message.type === "ExpiringImage" &&
+				urn === "urn:gr:err:entitlement_limit"
+			) {
+				toast.error(
+					"Daily expiring photo limit reached, sending more now requires Grindr subscription",
+					{ id: "expiring-photo-limit" },
+				);
+			}
+			const msg = this.messages.find((m) => m.messageId === tempId);
+			if (msg) {
+				msg.status = "error";
+				msg.sendError = error;
+			}
+			if (!this.#destroyed) this.#updatePreview();
+		}
+	}
+
+	#adoptServerVersion({
+		message,
+		server,
+	}: {
+		message: OptimisticMessage;
+		server: ApiResponseMessage;
+	}): void {
+		const wasPreviewed =
+			previewedMessage(this.messages)?.messageId === message.messageId;
+		Object.assign(message, server, { status: "sent" as const });
+		this.#resortNewestFirst();
+		const isPreviewed =
+			previewedMessage(this.messages)?.messageId === server.messageId;
+		if (wasPreviewed || isPreviewed) this.#updatePreview();
+		this.#syncCache();
+	}
+
+	#resortNewestFirst(): void {
+		this.messages = removeDuplicateMessages(this.messages);
+	}
+
+	#advanceLastRead(timestamp: number | null): boolean {
+		if (timestamp === null) return false;
+		if (
+			this.lastReadTimestamp !== null &&
+			timestamp <= this.lastReadTimestamp
+		)
+			return false;
+		this.lastReadTimestamp = timestamp;
+		return true;
+	}
+
+	#syncCache(): void {
+		if (!this.profile) return;
+		this.#conversations.setCachedConversation({
+			conversationId: this.conversationId,
+			data: {
+				messages: sentMessages(this.messages),
+				profile: this.profile,
+				pageKey: this.pageKey,
+				lastReadTimestamp: this.lastReadTimestamp,
+			},
+		});
+	}
+
+	#updatePreview(message = previewedMessage(this.messages)) {
+		this.#conversations.updatePreview({
+			conversationId: this.conversationId,
+			preview: previewFromMessage(message),
+			timestamp: message?.timestamp ?? -1,
+		});
+	}
+
+	remove(messageId: string) {
+		const previewed =
+			previewedMessage(this.messages)?.messageId === messageId;
+
+		let revert = () => {};
+		const index = this.messages.findIndex((m) => m.messageId === messageId);
+		const removed = this.messages[index];
+		if (removed) {
+			this.messages.splice(index, 1);
+			if (previewed) this.#updatePreview();
+			this.#syncCache();
+			const revertDeleteMessage = () => {
+				this.messages.splice(index, 0, removed);
+				if (previewed) this.#updatePreview(removed);
+				this.#syncCache();
+			};
+
+			const isOnly = this.messages.length === 0;
+			let revertDeleteConversation = () => {};
+			if (isOnly) {
+				({ revert: revertDeleteConversation } =
+					this.#conversations.remove(this.conversationId));
+			}
+
+			revert = () => {
+				revertDeleteConversation();
+				revertDeleteMessage();
+			};
+		}
+
+		return { revert };
+	}
+
+	reportRead({
+		messageId,
+		timestamp,
+	}: {
+		messageId: string;
+		timestamp: number;
+	}): void {
+		if (
+			this.lastReadTimestamp !== null &&
+			timestamp <= this.lastReadTimestamp
+		)
+			return;
+		this.#readReceipts.push({ messageId, timestamp });
+	}
+
+	async #markRead(messageId: string): Promise<void> {
+		const { revealMessageRead } = await getPreferences();
+		if (!revealMessageRead) return;
+		try {
+			await markConversationAsRead({
+				conversationId: this.conversationId,
+				messageId,
+			});
+		} catch (error) {
+			console.error(error);
+			showErrorToast({
+				label: "Failed to mark conversation as read",
+				error,
+			});
+		}
+	}
+
+	async reactTo({
+		messageId,
+		reactionType,
+	}: {
+		messageId: string;
+		reactionType: number;
+	}): Promise<void> {
+		const msg = this.messages.find((m) => m.messageId === messageId);
+		// The received-photos viewer reaches back past what the chat has loaded,
+		// so a message we can't show optimistically still gets its reaction sent.
+		if (!msg) {
+			await reactToMessage({
+				conversationId: this.conversationId,
+				messageId,
+				reactionType,
+			});
+			return;
+		}
+		const optimistic = { reactionType, profileId: this.ourProfileId };
+		msg.reactions.push(optimistic);
+		this.#syncCache();
+		try {
+			await reactToMessage({
+				conversationId: this.conversationId,
+				messageId,
+				reactionType,
+			});
+		} catch (err) {
+			const idx = msg.reactions.findIndex((r) => r === optimistic);
+			if (idx !== -1) msg.reactions.splice(idx, 1);
+			if (!this.#destroyed) this.#syncCache();
+			throw err;
+		}
+	}
+
+	markMessageAsUnsent(messageId: string): { revert: () => void } {
+		return unsendInPlace({
+			messages: this.messages,
+			messageId,
+			sync: () => this.#syncCache(),
+			refreshPreview: (message) => this.#updatePreview(message),
+		});
+	}
+
+	/** Records what a fetch said is left of an expiring clip's views. */
+	recordMediaViews(views: {
+		messageId: string;
+		viewsRemaining: number;
+	}): void {
+		recordMediaViewsInPlace({
+			...views,
+			messages: this.messages,
+			sync: () => this.#syncCache(),
+		});
+	}
+
+	lockSharedAlbum(albumId: number): { revert: () => void } {
+		return lockSharedAlbumInPlace({
+			messages: this.messages,
+			albumId,
+			ourProfileId: this.ourProfileId,
+			sync: () => this.#syncCache(),
+		});
+	}
+}
+
+export const [getConversationState, setConversationState] =
+	createContext<() => ConversationState>();

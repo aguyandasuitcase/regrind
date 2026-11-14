@@ -1,0 +1,416 @@
+import { decode, encode } from "@msgpack/msgpack";
+import { invoke } from "@tauri-apps/api/core";
+import z from "zod";
+
+import { noticeAccountStatusError } from "#lib/api/account-status-state.svelte.ts";
+import { ApiError, type ApiErrorKind } from "#lib/api/api-error.ts";
+import {
+	asAppError,
+	blockedKindOf,
+	markRequestBlocked,
+} from "#lib/api/methods.ts";
+import { redactPath } from "#lib/api/redact/text.ts";
+import { parseJson } from "#lib/api/redact/value.ts";
+import { signOutIfSessionLost } from "#lib/api/session-lost.ts";
+import { demoRoute } from "#lib/demo/index.ts";
+import { deprecatedClientVersionErrorSchema } from "#lib/model/authentication.ts";
+import { schemaName } from "#lib/model/schema-names.ts";
+import { fromBase64, toBase64 } from "#lib/util/base64.ts";
+import type { MediaFileDescriptor } from "#lib/platform/media-file.ts";
+
+type RequestInfo = { method: string; path: string; body?: unknown };
+
+class ExternalRequestError extends ApiError {
+	override get retryable(): boolean {
+		if (this.kind === "Http" || this.kind === "Connect") return true;
+		const status = this.response?.status;
+		return status !== undefined && (status >= 500 || status === 408);
+	}
+}
+
+type ApiErrorClass = typeof ApiError;
+
+function buildRestResponse({
+	status,
+	responseBody,
+	requestInfo,
+	ErrorClass = ApiError,
+}: {
+	status: number;
+	responseBody: Uint8Array;
+	requestInfo: RequestInfo;
+	ErrorClass?: ApiErrorClass;
+}) {
+	let decoded: string | undefined;
+	const text = () => (decoded ??= new TextDecoder().decode(responseBody));
+	return {
+		status,
+		bytes() {
+			return responseBody;
+		},
+		text,
+		assertOk() {
+			if (status >= 200 && status < 300) {
+				return;
+			}
+			throw new ErrorClass({
+				message: `API request failed with status ${status}`,
+				request: requestInfo,
+				response: { status, body: text() },
+			});
+		},
+		json() {
+			try {
+				return JSON.parse(text());
+			} catch (error) {
+				console.error("Failed to parse JSON response", {
+					path: requestInfo.path,
+					text: text(),
+				});
+				throw new ErrorClass({
+					message: "Failed to parse API response",
+					request: requestInfo,
+					response: { status, body: text() },
+					cause: error,
+				});
+			}
+		},
+		jsonParsed<TSchema extends z.ZodType>(schema: TSchema) {
+			this.assertOk();
+			const data = this.json();
+			try {
+				return parseApiResponse({
+					schema,
+					data,
+					path: requestInfo.path,
+					method: requestInfo.method,
+				});
+			} catch (error) {
+				if (error instanceof ApiError) throw error;
+				throw new ErrorClass({
+					message: schemaMismatchMessage({
+						schema,
+						error,
+						request: requestInfo,
+					}),
+					request: requestInfo,
+					response: { status, body: text() },
+					cause: error,
+				});
+			}
+		},
+	};
+}
+
+function decodeRestResponse({
+	encoded,
+	requestInfo,
+	ErrorClass,
+}: {
+	encoded: unknown;
+	requestInfo: RequestInfo;
+	ErrorClass?: ApiErrorClass;
+}) {
+	if (typeof encoded !== "string") {
+		throw new Error("Invalid response from backend");
+	}
+	const decoded = decode(fromBase64(encoded));
+	const { status, body: responseBody } = z
+		.object({ status: z.number(), body: z.instanceof(Uint8Array) })
+		.parse(decoded);
+	return buildRestResponse({ status, responseBody, requestInfo, ErrorClass });
+}
+
+type RestResponse = ReturnType<typeof buildRestResponse>;
+
+async function respondFromDemoOrSend({
+	requestInfo,
+	ErrorClass,
+	send,
+}: {
+	requestInfo: RequestInfo;
+	ErrorClass?: ApiErrorClass;
+	send: () => Promise<RestResponse>;
+}): Promise<RestResponse> {
+	if (!__DEMO__) return await send();
+	const { path, method } = requestInfo;
+	const { status, body } = demoRoute({
+		path,
+		method,
+		body: requestInfo.body,
+	});
+	const responseBody = new TextEncoder().encode(JSON.stringify(body ?? null));
+	return buildRestResponse({ status, responseBody, requestInfo, ErrorClass });
+}
+
+function restInvokeError({
+	error,
+	requestInfo,
+}: {
+	error: unknown;
+	requestInfo: RequestInfo;
+}): ApiError {
+	if (error instanceof ApiError) return error;
+	const appError = asAppError(error);
+	if (appError !== undefined) {
+		const blocked = blockedKindOf(appError.kind);
+		if (blocked !== undefined) {
+			markRequestBlocked({ kind: blocked });
+			return new ApiError({
+				message:
+					blocked === "network"
+						? "Request blocked before it reached Grindr"
+						: "Request blocked by Grindr",
+				request: requestInfo,
+				response: null,
+				kind: appError.kind,
+				cause: error,
+			});
+		}
+	}
+	if (appError?.kind === "NotSignedIn") {
+		signOutIfSessionLost().catch((error) => console.error(error));
+	}
+	return new ApiError({
+		message:
+			appError?.prettyMessage ??
+			(error instanceof Error ? error.message : String(error)),
+		request: requestInfo,
+		response: null,
+		kind: appError?.kind ?? null,
+		cause: error,
+	});
+}
+
+// https://github.com/tauri-apps/tauri/issues/10573
+export async function invokeRest(
+	command: string,
+	options: { args: Record<string, unknown>; requestInfo: RequestInfo },
+) {
+	const { requestInfo } = options;
+	try {
+		const encoded = await invoke(command, options.args);
+		return decodeRestResponse({ encoded, requestInfo });
+	} catch (error) {
+		throw restInvokeError({ error, requestInfo });
+	}
+}
+
+const uploadOutcomeSchema = z.object({
+	response: z.string(),
+	sha256: z
+		.string()
+		.regex(/^[0-9a-f]{64}$/)
+		.nullable(),
+	bodySize: z.int().nonnegative(),
+});
+
+export async function uploadFileRest(
+	path: string,
+	options: {
+		file: MediaFileDescriptor;
+		part: { name: string; filename: string } | null;
+		maxBodySize: number;
+		profileId: number;
+		onHashed?: (sha256: string) => void;
+	},
+) {
+	const method = "POST";
+	const requestInfo = { method, path };
+	try {
+		const outcome = uploadOutcomeSchema.parse(
+			await invoke("upload_media_file", {
+				file: options.file,
+				request: { method, path, part: options.part },
+				maxBodySize: options.maxBodySize,
+				profileId: String(options.profileId),
+			}),
+		);
+		if (outcome.sha256 !== null) options.onHashed?.(outcome.sha256);
+		return {
+			response: decodeRestResponse({
+				encoded: outcome.response,
+				requestInfo,
+			}),
+			sha256: outcome.sha256,
+		};
+	} catch (error) {
+		throw restInvokeError({ error, requestInfo });
+	}
+}
+
+export async function fetchRest(
+	path: string,
+	options: {
+		method?: string;
+		body?: unknown;
+		abortController?: AbortController;
+	} = { method: "GET" },
+) {
+	const method = options.method ?? "GET";
+	const requestInfo = { method, path, body: options.body };
+	const response = await respondFromDemoOrSend({
+		requestInfo,
+		send: () =>
+			sendRestRequest({
+				requestInfo,
+				abortController: options.abortController,
+			}),
+	});
+	noticeRefusedVersion(response);
+	return response;
+}
+
+function noticeRefusedVersion(response: RestResponse): void {
+	if (response.status !== 412) return;
+	const body = parseJson(response.text());
+	if (!body.ok) return;
+	const error = deprecatedClientVersionErrorSchema.safeParse(body.value);
+	if (error.success) noticeAccountStatusError(error.data);
+}
+
+async function sendRestRequest({
+	requestInfo,
+	abortController,
+}: {
+	requestInfo: RequestInfo;
+	abortController: AbortController | undefined;
+}) {
+	const { method, path, body } = requestInfo;
+	const payload = encode({
+		method,
+		path,
+		body: body === undefined ? null : encode(body),
+	});
+	const response = await invokeRest("request", {
+		args: { payload: toBase64(payload) },
+		requestInfo,
+	});
+	if (abortController?.signal.aborted) {
+		throw new ApiError({
+			message: "Request aborted",
+			request: requestInfo,
+			response: null,
+		});
+	}
+	return response;
+}
+
+const externalErrorMessages: Partial<Record<ApiErrorKind, string>> = {
+	Connect: "Couldn't connect. Check your internet connection and try again.",
+	NetworkBlocked:
+		"Something blocked the request before it reached the server",
+	RequestBlocked: "The server blocked the request",
+	RateLimited: "Too many requests, try again later",
+};
+
+function externalInvokeError({
+	error,
+	requestInfo,
+}: {
+	error: unknown;
+	requestInfo: RequestInfo;
+}): ApiError {
+	if (error instanceof ApiError) return error;
+	const appError = asAppError(error);
+	return new ExternalRequestError({
+		message:
+			(appError && externalErrorMessages[appError.kind]) ??
+			appError?.prettyMessage ??
+			(error instanceof Error ? error.message : String(error)),
+		request: requestInfo,
+		response: null,
+		kind: appError?.kind ?? null,
+		cause: error,
+	});
+}
+
+function hostQualifiedPath(url: URL): string {
+	return `${url.host}${url.pathname}${url.search}`;
+}
+
+async function sendExternalRequest({
+	url,
+	range,
+	requestInfo,
+}: {
+	url: URL;
+	range?: string;
+	requestInfo: RequestInfo;
+}) {
+	try {
+		const encoded = await invoke("fetch_external", {
+			url: url.href,
+			range,
+		});
+		return decodeRestResponse({
+			encoded,
+			requestInfo,
+			ErrorClass: ExternalRequestError,
+		});
+	} catch (error) {
+		throw externalInvokeError({ error, requestInfo });
+	}
+}
+
+export async function fetchExternal({
+	url,
+	range,
+}: {
+	url: URL;
+	range?: string;
+}) {
+	const requestInfo = { method: "GET", path: hostQualifiedPath(url) };
+	return await respondFromDemoOrSend({
+		requestInfo,
+		ErrorClass: ExternalRequestError,
+		send: () => sendExternalRequest({ url, range, requestInfo }),
+	});
+}
+
+export function parseApiResponse<TSchema extends z.ZodType>(options: {
+	schema: TSchema;
+	data: unknown;
+	path: string;
+	method?: string;
+}): z.infer<TSchema> {
+	const parsed = options.schema.safeParse(options.data);
+	if (parsed.success) {
+		return parsed.data;
+	}
+
+	console.error("API response schema validation failed", {
+		path: options.path,
+		method: options.method ?? "GET",
+		schema: schemaName(options.schema),
+		issues: parsed.error.issues,
+		response: options.data,
+	});
+
+	throw parsed.error;
+}
+
+function endpointOf(path: string): string {
+	const redacted = redactPath(path);
+	return redacted.split("?")[0] ?? redacted;
+}
+
+export function schemaMismatchMessage({
+	schema,
+	error,
+	request,
+}: {
+	schema: z.ZodType;
+	error: unknown;
+	request: RequestInfo;
+}): string {
+	if (error instanceof z.ZodError) {
+		const subject =
+			schemaName(schema) ??
+			`the schema for ${request.method} ${endpointOf(request.path)}`;
+		return `API response did not match ${subject}`;
+	}
+	return error instanceof Error
+		? error.message
+		: "API response validation failed";
+}

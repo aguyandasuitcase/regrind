@@ -1,0 +1,96 @@
+import { invoke } from "@tauri-apps/api/core";
+import { SvelteSet } from "svelte/reactivity";
+
+import { registerAccountCache } from "#lib/api/account-caches.ts";
+import type { BanInfo, Restriction } from "#lib/api/methods.ts";
+import type {
+	AccountStatusError,
+	DeprecatedClientVersionError,
+	VerificationRequiredError,
+} from "#lib/model/authentication.ts";
+
+export type AccountStatus =
+	| { kind: "banned"; info: BanInfo }
+	| { kind: "restriction"; restriction: Restriction }
+	| { kind: "phoneVerificationRequired"; error: VerificationRequiredError }
+	| { kind: "unsupportedVersion"; error: DeprecatedClientVersionError };
+
+export const accountStatusState = $state<{
+	open: boolean;
+	status: AccountStatus | null;
+}>({ open: false, status: null });
+
+const dismissedKinds = new SvelteSet<AccountStatus["kind"]>();
+
+registerAccountCache({
+	reset: () => {
+		accountStatusState.open = false;
+		accountStatusState.status = null;
+		dismissedKinds.clear();
+	},
+});
+
+export function showAccountStatus(status: AccountStatus): void {
+	accountStatusState.status = status;
+	accountStatusState.open = true;
+}
+
+export function showAccountRestriction(
+	restriction: Restriction | null | undefined,
+): boolean {
+	if (!restriction) return false;
+	showAccountStatus({ kind: "restriction", restriction });
+	return true;
+}
+
+function accountStatusOf(error: AccountStatusError): AccountStatus {
+	return error.code === 30
+		? { kind: "phoneVerificationRequired", error }
+		: { kind: "unsupportedVersion", error };
+}
+
+let versionRefresh: Promise<boolean> | null = null;
+
+// A refused version first tries the one the fork publishes; a newer one
+// reloads the app onto it instead of asking for an update.
+function adoptPublishedVersion(): Promise<boolean> {
+	versionRefresh ??= invoke<boolean>("refresh_grindr_version")
+		.catch(() => false)
+		.then((result) => {
+			const changed = result === true;
+			if (changed) location.reload();
+			else versionRefresh = null;
+			return changed;
+		});
+	return versionRefresh;
+}
+
+function showUnlessVersionAdopted(
+	status: AccountStatus,
+	show: () => void,
+): void {
+	if (status.kind !== "unsupportedVersion") return show();
+	void adoptPublishedVersion().then((changed) => {
+		if (!changed) show();
+	});
+}
+
+export function showAccountStatusForError(error: AccountStatusError): void {
+	const status = accountStatusOf(error);
+	showUnlessVersionAdopted(status, () => showAccountStatus(status));
+}
+
+export function noticeAccountStatusError(error: AccountStatusError): void {
+	const status = accountStatusOf(error);
+	if (accountStatusState.open || dismissedKinds.has(status.kind)) return;
+	showUnlessVersionAdopted(status, () => {
+		if (accountStatusState.open || dismissedKinds.has(status.kind)) return;
+		showAccountStatus(status);
+	});
+}
+
+export function dismissAccountStatus(): void {
+	const kind = accountStatusState.status?.kind;
+	if (kind) dismissedKinds.add(kind);
+	accountStatusState.open = false;
+}

@@ -1,0 +1,28 @@
+<script>
+	import PaperPlaneRightIcon from "phosphor-svelte/lib/PaperPlaneRightIcon";
+
+	import PrimaryComposerButton from "#lib/components/shared/PrimaryComposerButton.svelte";
+	import { softKeyboardVisibility } from "#lib/platform/android-native-bridge.ts";
+	import { keepKeyboard } from "./keep-keyboard";
+	import { getMessageComposerContext } from "./message-composer-context.svelte";
+
+	const { disabled } = $derived(getMessageComposerContext()());
+</script>
+
+<!-- Sending must not cost the keyboard: see keepKeyboard for what focusout
+     does to the composer's geometry mid-tap. The pointerdown half is gated to
+     Android with the IME actually up, which is the only place it does
+     anything. -->
+<PrimaryComposerButton
+	type="submit"
+	aria-label="Send message"
+	{disabled}
+	onpointerdown={(event) => {
+		if (softKeyboardVisibility() === true) event.preventDefault();
+	}}
+	onmousedown={keepKeyboard}
+>
+	{#snippet icon({ ...props })}
+		<PaperPlaneRightIcon weight="fill" {...props} />
+	{/snippet}
+</PrimaryComposerButton>

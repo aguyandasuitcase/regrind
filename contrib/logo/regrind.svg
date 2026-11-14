@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="128 128 256 256">
+  <defs>
+    <linearGradient id="ogAccent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFC107"/>
+      <stop offset="50%" stop-color="#FF8F00"/>
+      <stop offset="100%" stop-color="#FF5722"/>
+    </linearGradient>
+  </defs>
+  <path d="M168 360V152H272C316 152 344 180 344 220C344 260 316 288 272 288H220M258 288L332 360"
+        fill="none" stroke="url(#ogAccent)" stroke-width="28"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M224 216L272 192L248 240L240 224Z" fill="url(#ogAccent)"/>
+</svg>

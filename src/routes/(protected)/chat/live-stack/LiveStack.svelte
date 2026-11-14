@@ -1,0 +1,160 @@
+<script lang="ts">
+	import { onNavigate } from "$app/navigation";
+	import { page } from "$app/state";
+	import { onDestroy, onMount, type Snippet, untrack } from "svelte";
+	import type { NavigationTarget } from "$app/navigation";
+	import type { Attachment } from "svelte/attachments";
+
+	import {
+		STACK_Z,
+		stackMotion,
+	} from "#lib/components/navigation/stack/motion.ts";
+	import { paneSurface } from "#lib/components/navigation/stack/surface.ts";
+	import {
+		softKeyboardHidden,
+		softKeyboardVisibility,
+	} from "#lib/platform/android-native-bridge.ts";
+	import { attachSystemBackGesture } from "#lib/platform/system-back-gesture.ts";
+	import { earlierPathnames } from "#lib/util/history.ts";
+	import { reducedMotion } from "#lib/util/reduced-motion.ts";
+	import { remeasureScreenChrome } from "#lib/util/screen-chrome.svelte.ts";
+	import { LiveStackState } from "./live-stack-state.svelte";
+
+	let {
+		basePath,
+		keyOf,
+		base,
+		sheet,
+		externalBase,
+	}: {
+		basePath: string;
+		keyOf: (
+			target: Pick<NavigationTarget, "params" | "route">,
+		) => string | null;
+		base?: Snippet<[{ covered: boolean; uncovering: boolean }]>;
+		sheet: Snippet<[string, { leaving: boolean }]>;
+		/**
+		 * A base that lives elsewhere (the tab shell) in place of `base`: the
+		 * stack moves it and marks it covered as it would its own.
+		 */
+		externalBase?: () => HTMLElement | null;
+	} = $props();
+
+	const KEYBOARD_SETTLE_MS = 150;
+
+	let basePane: HTMLElement | null = $state(null);
+	let sheetPane: HTMLElement | null = null;
+	let dim: HTMLElement | null = $state(null);
+
+	const motion = stackMotion();
+
+	const stack: LiveStackState = new LiveStackState({
+		surface: paneSurface({
+			panes: () => ({
+				front: sheetPane,
+				back: externalBase?.() ?? basePane,
+				dim,
+			}),
+			parallax: () => !reducedMotion.current,
+			motion,
+		}),
+		motion,
+		top: () => keyOf(page),
+		keyOf: (target) => keyOf(target),
+		scope: untrack(() => basePath),
+		reducedMotion: () => reducedMotion.current,
+		backLandsOnBase: () => earlierPathnames()[0] === basePath,
+		keyboardVisible: () => softKeyboardVisibility() === true,
+		keyboardHidden: () =>
+			softKeyboardHidden({ settleMs: KEYBOARD_SETTLE_MS }),
+	});
+
+	const leaving = $derived(stack.leaving !== null);
+
+	let baseMounted = $state(!stack.covered);
+
+	onMount(() => {
+		if (baseMounted) return;
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				baseMounted = true;
+			}),
+		);
+	});
+
+	const placePane: Attachment<HTMLElement> = (pane) => {
+		sheetPane = pane;
+		stack.applyFrame();
+		return () => {
+			if (sheetPane === pane) sheetPane = null;
+		};
+	};
+
+	onNavigate((navigation) => stack.navigate(navigation));
+
+	$effect(() => attachSystemBackGesture(stack));
+
+	$effect(() => {
+		const node = externalBase?.();
+		if (!node) return;
+		node.toggleAttribute("data-covered", stack.covered);
+		node.inert = stack.sheetOpen;
+		return () => {
+			node.removeAttribute("data-covered");
+			node.inert = false;
+		};
+	});
+
+	// After the toggle above, or chrome under the base still reads as covered.
+	$effect(() => {
+		void stack.covered;
+		void stack.leaving;
+		remeasureScreenChrome();
+	});
+
+	onDestroy(() => stack.dispose());
+</script>
+
+{#if !externalBase}
+	<div
+		bind:this={basePane}
+		data-slot="live-stack-base"
+		class="fixed inset-x-0 top-0 flex h-(--viewport-height) flex-col bg-background pt-(--safe-area-top) pb-(--safe-area-bottom)"
+		style:z-index={STACK_Z.back}
+		data-covered={stack.covered || undefined}
+		inert={stack.sheetOpen}
+	>
+		{#if baseMounted}
+			{@render base?.({ covered: stack.covered, uncovering: leaving })}
+		{/if}
+	</div>
+{/if}
+{#if stack.moving || stack.tracking}
+	<div
+		bind:this={dim}
+		data-slot="live-stack-dim"
+		class="pointer-events-none fixed inset-0 bg-[rgb(0_0_0/var(--stack-scrim))] opacity-0"
+		style:z-index={STACK_Z.dim}
+	></div>
+{/if}
+{#if stack.sheetKey !== null}
+	{#key stack.sheetKey}
+		<div
+			{@attach placePane}
+			data-slot="live-stack-sheet"
+			class={[
+				"fixed inset-x-0 top-0 flex h-(--viewport-height) flex-col bg-background pt-(--safe-area-top) pb-(--safe-area-bottom)",
+				{
+					"shadow-(--stack-edge)": motion.edge,
+					"pointer-events-none": motion.fade && leaving,
+				},
+			]}
+			style:z-index={STACK_Z.front}
+			data-leaving={leaving || undefined}
+		>
+			<div class="contents" inert={leaving}>
+				{@render sheet(stack.sheetKey, { leaving })}
+			</div>
+		</div>
+	{/key}
+{/if}

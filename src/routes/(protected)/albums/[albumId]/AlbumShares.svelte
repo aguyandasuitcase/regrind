@@ -1,0 +1,283 @@
+<script lang="ts">
+	import { toast } from "svelte-sonner";
+
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import { setAlbumShared } from "#lib/api/messaging/album-shares-state.svelte.ts";
+	import { getAlbumShares, unshareAlbum } from "#lib/api/messaging/albums.ts";
+	import { getProfiles } from "#lib/api/users/profiles.ts";
+	import ApiErrorDisplay from "#lib/components/feedback/ApiErrorDisplay.svelte";
+	import ProfileActionRow from "#lib/components/profile/ProfileActionRow.svelte";
+	import ProfileActionRowSkeleton from "#lib/components/profile/ProfileActionRowSkeleton.svelte";
+	import * as AlertDialog from "#lib/components/ui/alert-dialog/index.ts";
+	import { Button } from "#lib/components/ui/button/index.ts";
+	import { observeIntersection } from "#lib/util/observe-intersection.ts";
+
+	let {
+		albumId,
+		onSharedCountChange,
+	}: { albumId: number; onSharedCountChange?: (count: number) => void } =
+		$props();
+
+	type Share = {
+		profileId: number;
+		name: string | null;
+		mediaHash: string | null;
+	};
+
+	// An album can be shared with hundreds of profiles, and resolving them costs
+	// a request per 150, so only a page is resolved at a time.
+	const PAGE_SIZE = 60;
+
+	// Revoking hundreds of shares in one request is asking for a rejected body,
+	// so the bulk unshare goes out in batches.
+	const UNSHARE_BATCH_SIZE = 50;
+
+	let sharedIds = $state<number[] | null>(null);
+	let shares = $state<Share[]>([]);
+	let error = $state<unknown>(null);
+	let loadingMore = $state(false);
+	// A failed page disarms the sentinel: it stays on screen after the error,
+	// and retrying on sight would loop the failure.
+	let moreError = $state(false);
+	let revoking = $state<number | null>(null);
+	let unshareAllOpen = $state(false);
+	let unsharingAll = $state(false);
+
+	const remaining = $derived((sharedIds?.length ?? 0) - shares.length);
+
+	async function resolvePage(ids: number[]) {
+		const profiles = await getProfiles(ids);
+		const byId = new Map(profiles.map((p) => [p.profileId, p]));
+		// Keep any id the profile lookup didn't return, so a share is never
+		// silently hidden just because its profile could not be resolved.
+		return ids.map((profileId) => {
+			const profile = byId.get(profileId);
+			return {
+				profileId,
+				name: profile?.displayName ?? null,
+				mediaHash: profile?.medias?.[0]?.mediaHash ?? null,
+			};
+		});
+	}
+
+	async function load(id: number) {
+		sharedIds = null;
+		shares = [];
+		error = null;
+		try {
+			const profileIds = await getAlbumShares(id);
+			sharedIds = profileIds;
+			onSharedCountChange?.(profileIds.length);
+			if (profileIds.length > 0) {
+				shares = await resolvePage(profileIds.slice(0, PAGE_SIZE));
+			}
+		} catch (err) {
+			console.error(err);
+			error = err;
+		}
+	}
+
+	async function loadMore() {
+		if (sharedIds === null || loadingMore || moreError || remaining <= 0)
+			return;
+		loadingMore = true;
+		try {
+			const next = sharedIds.slice(
+				shares.length,
+				shares.length + PAGE_SIZE,
+			);
+			shares = [...shares, ...(await resolvePage(next))];
+			moreError = false;
+		} catch (err) {
+			console.error(err);
+			moreError = true;
+			showErrorToast({ label: "Failed to load more", error: err });
+		} finally {
+			loadingMore = false;
+		}
+	}
+
+	$effect(() => {
+		void load(albumId);
+	});
+
+	async function revoke(profileId: number) {
+		if (revoking !== null || unsharingAll) return;
+		const previousShares = shares;
+		const previousIds = sharedIds;
+		revoking = profileId;
+		shares = previousShares.filter(
+			(share) => share.profileId !== profileId,
+		);
+		// Drop it from the id list too, or the count and paging would still
+		// include a profile that is no longer shared with.
+		sharedIds = previousIds?.filter((id) => id !== profileId) ?? null;
+		if (sharedIds !== null) onSharedCountChange?.(sharedIds.length);
+		try {
+			await unshareAlbum({ albumId, profileIds: [profileId] });
+			setAlbumShared(albumId, profileId, false);
+			toast.success("Album unshared");
+		} catch (err) {
+			console.error(err);
+			shares = previousShares;
+			sharedIds = previousIds;
+			if (previousIds !== null) onSharedCountChange?.(previousIds.length);
+			showErrorToast({ label: "Failed to unshare album", error: err });
+		} finally {
+			revoking = null;
+		}
+	}
+
+	async function unshareAll() {
+		const ids = sharedIds;
+		if (
+			ids === null ||
+			ids.length === 0 ||
+			unsharingAll ||
+			revoking !== null
+		) {
+			return;
+		}
+		unsharingAll = true;
+		try {
+			for (let i = 0; i < ids.length; i += UNSHARE_BATCH_SIZE) {
+				const batch = ids.slice(i, i + UNSHARE_BATCH_SIZE);
+				await unshareAlbum({ albumId, profileIds: batch });
+				for (const profileId of batch)
+					setAlbumShared(albumId, profileId, false);
+			}
+			sharedIds = [];
+			shares = [];
+			onSharedCountChange?.(0);
+			unshareAllOpen = false;
+			toast.success("Album unshared with everyone");
+		} catch (err) {
+			console.error(err);
+			showErrorToast({ label: "Failed to unshare album", error: err });
+			// An earlier batch may already have gone through, so the local list is
+			// no longer trustworthy — take the server's word for what is left.
+			unshareAllOpen = false;
+			await load(albumId);
+		} finally {
+			unsharingAll = false;
+		}
+	}
+</script>
+
+<div class="flex flex-col gap-2">
+	<!-- The action sits by the heading, not under the list: the list can run to
+	     hundreds of profiles, and anything below it is effectively unreachable. -->
+	<div class="flex min-h-8 items-center justify-between gap-2">
+		<span class="section-label">
+			Shared with{#if sharedIds !== null && sharedIds.length > 0}
+				&nbsp;({sharedIds.length}){/if}
+		</span>
+		{#if error === null && sharedIds !== null && sharedIds.length > 0}
+			<!-- Bare destructive text, no icon and no fill: it sits beside a section
+			     label, and anything heavier reads as the section's primary action. -->
+			<button
+				type="button"
+				class="shrink-0 text-preview font-semibold text-destructive disabled:opacity-50"
+				disabled={unsharingAll || revoking !== null}
+				onclick={() => (unshareAllOpen = true)}
+			>
+				Unshare all
+			</button>
+		{/if}
+	</div>
+	{#if error !== null}
+		<ApiErrorDisplay
+			{error}
+			onRetry={() => void load(albumId)}
+			class="my-2"
+		/>
+	{:else if sharedIds === null}
+		<div class="flex flex-col">
+			{#each Array(4)}
+				<ProfileActionRowSkeleton />
+			{/each}
+		</div>
+	{:else if sharedIds.length === 0}
+		<span class="text-sm text-muted-foreground">
+			This album isn't shared with anyone.
+		</span>
+	{:else}
+		<div class="flex flex-col">
+			{#each shares as share (share.profileId)}
+				<ProfileActionRow
+					profileId={share.profileId}
+					name={share.name}
+					mediaHash={share.mediaHash}
+					actionLabel="Unshare"
+					actionDescription="Unshare with {share.name ??
+						'this profile'}"
+					disabled={revoking !== null || unsharingAll}
+					onAction={() => void revoke(share.profileId)}
+				/>
+			{/each}
+			<!-- The next page resolves as the list is scrolled; the skeletons
+			     stand in for the rows in flight so the list keeps its height. -->
+			{#if loadingMore}
+				{#each Array(Math.min(remaining, 3))}
+					<ProfileActionRowSkeleton />
+				{/each}
+			{/if}
+		</div>
+		{#if remaining > 0 && !loadingMore}
+			{#if moreError}
+				<Button
+					variant="outline"
+					class="w-full"
+					disabled={unsharingAll}
+					onclick={() => {
+						moreError = false;
+						void loadMore();
+					}}
+				>
+					Try again
+				</Button>
+			{:else}
+				<div
+					class="h-0"
+					use:observeIntersection={{
+						handle: () => void loadMore(),
+						rootMargin: "400px",
+					}}
+				></div>
+			{/if}
+		{/if}
+	{/if}
+</div>
+
+<AlertDialog.Root bind:open={unshareAllOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Unshare with everyone?</AlertDialog.Title>
+			<AlertDialog.Description>
+				{#if sharedIds !== null && sharedIds.length > 0}
+					{sharedIds.length}
+					{sharedIds.length === 1 ? "person" : "people"} will lose access
+					to this album. The album itself is kept.
+				{:else}
+					Everyone will lose access to this album. The album itself is
+					kept.
+				{/if}
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel disabled={unsharingAll}
+				>Cancel</AlertDialog.Cancel
+			>
+			<AlertDialog.Action
+				disabled={unsharingAll}
+				onclick={(event) => {
+					// Kept open so the dialog can stay disabled until every batch lands.
+					event.preventDefault();
+					void unshareAll();
+				}}
+			>
+				{unsharingAll ? "Unsharing…" : "Unshare all"}
+			</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

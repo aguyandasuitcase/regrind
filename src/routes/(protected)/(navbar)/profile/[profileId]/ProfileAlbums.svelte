@@ -1,0 +1,219 @@
+<script lang="ts">
+	import { goto } from "$app/navigation";
+	import FolderOpenIcon from "phosphor-svelte/lib/FolderOpenIcon";
+	import PlusIcon from "phosphor-svelte/lib/PlusIcon";
+
+	import { ApiError } from "#lib/api/api-error.ts";
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import {
+		createAlbum,
+		getAlbumsSharedByProfile,
+		getMyAlbums,
+	} from "#lib/api/messaging/albums.ts";
+	import { AlbumOpener } from "#lib/components/albums/album-open.svelte.ts";
+	import ApiErrorDisplay from "#lib/components/feedback/ApiErrorDisplay.svelte";
+	import { Button } from "#lib/components/ui/button/index.ts";
+	import { Skeleton } from "#lib/components/ui/skeleton/index.ts";
+	import type { AlbumSharer } from "#lib/chat/album-viewer.ts";
+	import type { MyAlbum, SharedAlbum } from "#lib/model/messaging/albums.ts";
+
+	let {
+		profileId,
+		self,
+		sharer,
+		enabled = true,
+	}: {
+		profileId: number;
+		self: boolean;
+		// Describes whose profile this is, for the viewer's header when tapping one
+		// of their shared albums. Unused on our own profile.
+		sharer?: AlbumSharer;
+		// The profile pager keeps the neighbouring profiles mounted so a swipe has
+		// something to land on, and holds their albums back until then: albums sit
+		// well below the fold, so fetching them for a profile nobody has swiped to
+		// is a request for nothing.
+		enabled?: boolean;
+	} = $props();
+
+	/** Both album shapes reduced to what this list renders. */
+	type AlbumEntry = {
+		albumId: number;
+		albumName: string | null;
+		coverUrl: string | null;
+		itemCount: number | null;
+		hasUnseenContent: boolean;
+	};
+
+	function fromMyAlbum(album: MyAlbum): AlbumEntry {
+		const first = album.content[0];
+		return {
+			albumId: album.albumId,
+			albumName: album.albumName,
+			coverUrl: first?.coverUrl ?? first?.thumbUrl ?? null,
+			itemCount: album.content.length,
+			// Only shared albums carry this — nothing is ever unseen in your own.
+			hasUnseenContent: false,
+		};
+	}
+
+	function fromSharedAlbum(album: SharedAlbum): AlbumEntry {
+		const counts = album.contentCount;
+		return {
+			albumId: album.albumId,
+			albumName: album.albumName,
+			coverUrl: album.content?.coverUrl ?? null,
+			itemCount: counts ? counts.imageCount + counts.videoCount : null,
+			hasUnseenContent: album.hasUnseenContent,
+		};
+	}
+
+	let albums = $state<AlbumEntry[] | null>(null);
+	let error = $state<unknown>(null);
+	// Somebody else's albums open in the lightbox viewer; only our own tiles lead
+	// to the album editor at /albums/{id}.
+	const opener = new AlbumOpener();
+
+	async function load(id: number, isSelf: boolean) {
+		albums = null;
+		error = null;
+		try {
+			albums = isSelf
+				? (await getMyAlbums()).map(fromMyAlbum)
+				: (await getAlbumsSharedByProfile(id)).map(fromSharedAlbum);
+		} catch (err) {
+			console.error(err);
+			error = err;
+		}
+	}
+
+	$effect(() => {
+		if (enabled) void load(profileId, self);
+	});
+
+	let creating = $state(false);
+
+	async function create() {
+		if (creating) return;
+		creating = true;
+		try {
+			const { albumId } = await createAlbum({ albumName: null });
+			await goto(`/albums/${albumId}`);
+		} catch (err) {
+			console.error(err);
+			const status =
+				err instanceof ApiError ? err.response?.status : null;
+			showErrorToast({
+				label:
+					status === 402
+						? "You've reached your album limit"
+						: "Failed to create album",
+				error: err,
+			});
+		} finally {
+			creating = false;
+		}
+	}
+</script>
+
+{#snippet tile(album: AlbumEntry)}
+	<!-- The cover is positioned out of flow: as an in-flow child its `height:
+	     100%` resolves against the aspect-ratio box's indefinite height, and the
+	     tile — a column flex item, so `min-height: auto` — grows to the cover's
+	     intrinsic height instead, which Android WebView does and leaves the row
+	     ragged. -->
+	<div
+		class={[
+			"relative aspect-square shrink-0 overflow-hidden rounded-xl bg-card-foreground/10",
+			{ "opacity-50": opener.openingId === album.albumId },
+		]}
+	>
+		{#if album.coverUrl}
+			<img
+				src={album.coverUrl}
+				alt=""
+				class="absolute inset-0 size-full object-cover"
+				draggable="false"
+			/>
+		{:else}
+			<div
+				class="absolute inset-0 flex items-center justify-center text-muted-foreground"
+			>
+				<FolderOpenIcon weight="fill" class="size-6" />
+			</div>
+		{/if}
+		{#if album.hasUnseenContent}
+			<span
+				class="absolute end-1 top-1 size-2.5 rounded-full bg-primary outline-2 outline-background"
+				aria-label="Unseen content"
+			></span>
+		{/if}
+	</div>
+	<span class="truncate text-sm">
+		{album.albumName ?? "Untitled album"}
+	</span>
+	{#if album.itemCount !== null}
+		<span class="text-xs text-muted-foreground">
+			{album.itemCount}
+			{album.itemCount === 1 ? "item" : "items"}
+		</span>
+	{/if}
+{/snippet}
+
+{#if self || error !== null || albums === null || albums.length > 0}
+	<div class="mt-4 flex flex-col gap-2">
+		<div class="flex items-center justify-between gap-2">
+			<span class="section-label">Albums</span>
+			{#if self}
+				<Button
+					variant="ghost"
+					size="sm"
+					disabled={creating}
+					onclick={() => void create()}
+				>
+					<PlusIcon weight="bold" />
+					New album
+				</Button>
+			{/if}
+		</div>
+		{#if error !== null}
+			<ApiErrorDisplay
+				{error}
+				onRetry={() => void load(profileId, self)}
+				class="my-2"
+			/>
+		{:else if albums === null}
+			<div class="flex gap-2">
+				{#each Array(3)}
+					<Skeleton class="aspect-square w-24 rounded-xl" />
+				{/each}
+			</div>
+		{:else}
+			<div class="flex gap-2 overflow-x-auto pb-1">
+				{#each albums as album (album.albumId)}
+					{#if self}
+						<a
+							href="/albums/{album.albumId}"
+							class="flex w-24 shrink-0 flex-col gap-1"
+						>
+							{@render tile(album)}
+						</a>
+					{:else}
+						<button
+							type="button"
+							class="flex w-24 shrink-0 cursor-pointer flex-col gap-1 text-start disabled:opacity-60"
+							disabled={opener.openingId !== null}
+							onclick={() =>
+								void opener.open(album.albumId, sharer ?? {}, {
+									// Whose albums these are: the profile on screen.
+									ownerProfileId: profileId,
+									albumName: album.albumName,
+								})}
+						>
+							{@render tile(album)}
+						</button>
+					{/if}
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/if}

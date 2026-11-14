@@ -1,0 +1,1058 @@
+use std::sync::{Mutex, PoisonError};
+
+mod entries;
+#[cfg(any(
+	target_os = "linux",
+	all(target_os = "macos", not(feature = "keychain"))
+))]
+mod file_store;
+mod keyring;
+
+pub use entries::{
+	adopt_legacy_account, forget_account, now_unix, AccountIndex,
+	AccountRecord, AccountsStorage, AuthStorage, DeviceStorage, ProfileId,
+	SigningKeyStorage,
+};
+
+pub(crate) use keyring::{entry, Entry};
+
+#[cfg(any(
+	target_os = "linux",
+	all(target_os = "macos", not(feature = "keychain"))
+))]
+pub fn init_file_store(base: std::path::PathBuf) {
+	if cfg!(demo) {
+		return;
+	}
+	file_store::init(base);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StorageBackend {
+	Keyring,
+	File,
+	Unavailable,
+}
+
+const HAS_FILE_STORE: bool = cfg!(any(
+	target_os = "linux",
+	all(target_os = "macos", not(feature = "keychain"))
+));
+
+pub fn init_keyring() -> StorageBackend {
+	static USABLE: Mutex<Option<StorageBackend>> = Mutex::new(None);
+	let install: fn() -> Result<(), String> = if cfg!(demo) {
+		install_memory_store
+	} else {
+		install_platform_store
+	};
+	cached(&USABLE, || probe_keyring(install))
+}
+
+fn install_memory_store() -> Result<(), String> {
+	let store = keyring_core::mock::Store::new().map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+// Held across the probe so concurrent callers never probe at once.
+fn cached(
+	usable: &Mutex<Option<StorageBackend>>,
+	probe: impl FnOnce() -> StorageBackend,
+) -> StorageBackend {
+	let mut usable = usable.lock().unwrap_or_else(PoisonError::into_inner);
+	if let Some(backend) = *usable {
+		return backend;
+	}
+	let backend = probe();
+	if backend != StorageBackend::Unavailable {
+		*usable = Some(backend);
+	}
+	backend
+}
+
+fn probe_keyring(
+	install_platform_store: impl FnOnce() -> Result<(), String>,
+) -> StorageBackend {
+	let file_store =
+		keyring_core::get_default_store().filter(|_| HAS_FILE_STORE);
+	match install_platform_store() {
+		Ok(()) if round_trips() => return StorageBackend::Keyring,
+		Ok(()) => {
+			tracing::warn!(
+				"[storage] the platform keyring failed a round trip"
+			);
+		}
+		Err(e) => tracing::warn!("[storage] no platform keyring: {e}"),
+	}
+	let Some(file_store) = file_store else {
+		tracing::error!("[storage] no credential store to fall back to");
+		return StorageBackend::Unavailable;
+	};
+	keyring_core::set_default_store(file_store);
+	if !round_trips() {
+		tracing::error!("[storage] the file store failed a round trip");
+		return StorageBackend::Unavailable;
+	}
+	StorageBackend::File
+}
+
+#[cfg(target_os = "ios")]
+fn install_platform_store() -> Result<(), String> {
+	let store = apple_native_keyring_store::protected::Store::new()
+		.map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn install_platform_store() -> Result<(), String> {
+	let store = android_native_keyring_store::Store::new()
+		.map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "keychain"))]
+fn install_platform_store() -> Result<(), String> {
+	let store = apple_native_keyring_store::keychain::Store::new()
+		.map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[cfg(all(target_os = "macos", not(feature = "keychain")))]
+fn install_platform_store() -> Result<(), String> {
+	Err("built without the keychain feature".to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn install_platform_store() -> Result<(), String> {
+	let store = windows_native_keyring_store::Store::new()
+		.map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_platform_store() -> Result<(), String> {
+	let store = dbus_secret_service_keyring_store::Store::new()
+		.map_err(|e| e.to_string())?;
+	keyring_core::set_default_store(store);
+	Ok(())
+}
+
+#[tauri::command]
+pub fn storage_backend(
+	backend: tauri::State<'_, StorageBackend>,
+) -> StorageBackend {
+	*backend
+}
+
+fn round_trips() -> bool {
+	let Ok(entry) = entry("startup-probe") else {
+		return false;
+	};
+	let ok = entry.set_secret(b"ok").is_ok()
+		&& entry.get_secret().is_ok_and(|secret| secret == b"ok");
+	let _ = entry.delete_credential();
+	ok
+}
+
+#[cfg(all(
+	test,
+	any(
+		target_os = "linux",
+		all(target_os = "macos", not(feature = "keychain"))
+	)
+))]
+mod tests {
+	use std::path::Path;
+	use std::sync::{Barrier, Mutex};
+	use std::time::Duration;
+
+	use super::*;
+
+	static DEFAULT_STORE: Mutex<()> = Mutex::new(());
+
+	const ME: ProfileId = 42;
+	const THEM: ProfileId = 77;
+	const PERSISTED_ENTRIES: [&str; 3] =
+		["device-info", "device-signing-key", "session"];
+
+	fn lock() -> std::sync::MutexGuard<'static, ()> {
+		DEFAULT_STORE.lock().unwrap_or_else(|e| e.into_inner())
+	}
+
+	fn with_file_store(test: impl FnOnce(&Path)) {
+		let _guard = lock();
+		let base = file_store::scratch_dir();
+		init_file_store(base.clone());
+		test(&base);
+		std::fs::remove_dir_all(&base).ok();
+	}
+
+	fn entry(user: &str) -> keyring_core::Entry {
+		keyring_core::Entry::new("open-grind", user).unwrap()
+	}
+
+	fn credentials_for(
+		profile_id: ProfileId,
+		auth_token: &str,
+	) -> grindr::Credentials {
+		serde_json::from_value(serde_json::json!({
+			"email": "user@example.com",
+			"profile_id": profile_id.to_string(),
+			"auth_token": auth_token,
+		}))
+		.unwrap()
+	}
+
+	fn credentials(auth_token: &str) -> grindr::Credentials {
+		credentials_for(ME, auth_token)
+	}
+
+	/// A session as an older build wrote it: the durable fields with the
+	/// short-lived ones alongside, all in one flat map.
+	fn legacy_session_blob(profile_id: ProfileId, session_id: &str) -> Vec<u8> {
+		rmp_serde::encode::to_vec_named(&serde_json::json!({
+			"email": "user@example.com",
+			"expires_at": 9_999_999_999u64,
+			"profile_id": profile_id.to_string(),
+			"session_id": session_id,
+			"auth_token": "auth-token",
+		}))
+		.unwrap()
+	}
+
+	fn session(auth_token: &str) -> grindr::Session {
+		grindr::Session {
+			credentials: credentials(auth_token),
+			token: None,
+		}
+	}
+
+	fn signing_key() -> grindr::DeviceSigningKey {
+		serde_json::from_value(serde_json::json!({
+			"key": "-----BEGIN PRIVATE KEY-----",
+			"user_id": "42",
+		}))
+		.unwrap()
+	}
+
+	fn stored_names(base: &Path) -> Vec<String> {
+		let mut names: Vec<_> = std::fs::read_dir(base.join("credentials"))
+			.unwrap()
+			.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+			.collect();
+		names.sort();
+		names
+	}
+
+	#[test]
+	fn every_secret_is_stored_under_the_account_that_owns_it() {
+		with_file_store(|base| {
+			DeviceStorage::save(ME, &grindr::DeviceInfo::generate()).unwrap();
+			AuthStorage::set_credentials(ME, &credentials("auth-token"))
+				.unwrap();
+			SigningKeyStorage::save(ME, &signing_key()).unwrap();
+
+			// The file store replaces `:` in a key, so the on-disk names carry
+			// the profile after an underscore rather than a colon.
+			assert_eq!(
+				stored_names(base),
+				["device-info_42", "device-signing-key_42", "session_42"]
+			);
+		});
+	}
+
+	#[test]
+	fn two_accounts_keep_separate_secrets() {
+		with_file_store(|_| {
+			AuthStorage::set_credentials(ME, &credentials_for(ME, "mine"))
+				.unwrap();
+			AuthStorage::set_credentials(
+				THEM,
+				&credentials_for(THEM, "theirs"),
+			)
+			.unwrap();
+
+			assert_eq!(
+				AuthStorage::get_credentials(ME)
+					.unwrap()
+					.unwrap()
+					.auth_token,
+				"mine"
+			);
+			assert_eq!(
+				AuthStorage::get_credentials(THEM)
+					.unwrap()
+					.unwrap()
+					.auth_token,
+				"theirs"
+			);
+		});
+	}
+
+	#[test]
+	fn each_account_gets_its_own_device_identity() {
+		with_file_store(|_| {
+			let mine = DeviceStorage::load_or_create(ME);
+			let theirs = DeviceStorage::load_or_create(THEM);
+
+			assert_ne!(
+				mine.device_id, theirs.device_id,
+				"a shared fingerprint would tie the two accounts together"
+			);
+			assert_eq!(
+				DeviceStorage::load_or_create(ME).device_id,
+				mine.device_id,
+				"an account's device has to be stable across launches"
+			);
+		});
+	}
+
+	#[test]
+	fn forgetting_one_account_leaves_the_other_untouched() {
+		with_file_store(|_| {
+			for id in [ME, THEM] {
+				AuthStorage::set_credentials(id, &credentials_for(id, "s"))
+					.unwrap();
+				DeviceStorage::save(id, &grindr::DeviceInfo::generate())
+					.unwrap();
+				SigningKeyStorage::save(id, &signing_key()).unwrap();
+			}
+
+			forget_account(ME);
+
+			assert!(AuthStorage::get_session(ME).unwrap().is_none());
+			assert!(DeviceStorage::load(ME).unwrap().is_none());
+			assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+			assert!(AuthStorage::get_session(THEM).unwrap().is_some());
+			assert!(DeviceStorage::load(THEM).unwrap().is_some());
+			assert!(SigningKeyStorage::load(THEM).unwrap().is_some());
+		});
+	}
+
+	#[test]
+	fn the_windows_uninstaller_clears_every_keyring_entry() {
+		let hooks = include_str!("../../installer-hooks.nsh");
+		for name in PERSISTED_ENTRIES {
+			assert!(
+				hooks.contains(&format!("\"{name}.open-grind\"")),
+				"installer-hooks.nsh leaves {name} in Credential Manager"
+			);
+		}
+	}
+
+	fn install_mock_keyring(refuses_writes: bool) -> Result<(), String> {
+		use keyring_core::api::CredentialStoreApi;
+
+		let store = keyring_core::mock::Store::new().unwrap();
+		if refuses_writes {
+			store
+				.build(keyring::SERVICE, "startup-probe", None)
+				.unwrap()
+				.as_any()
+				.downcast_ref::<keyring_core::mock::Cred>()
+				.unwrap()
+				.set_error(keyring_core::Error::NoStorageAccess(
+					"the default collection is locked".into(),
+				));
+		}
+		keyring_core::set_default_store(store);
+		Ok(())
+	}
+
+	fn session_file_exists(base: &std::path::Path) -> bool {
+		base.join("credentials").join("session_42").exists()
+	}
+
+	#[test]
+	fn init_keyring_leaves_a_usable_store_behind() {
+		with_file_store(|_| {
+			let backend = probe_keyring(install_platform_store);
+
+			assert_ne!(backend, StorageBackend::Unavailable);
+			assert!(keyring_core::get_default_store().is_some());
+			assert!(keyring_core::Entry::new("open-grind", "session:1").is_ok());
+		});
+	}
+
+	#[test]
+	fn a_keyring_that_refuses_writes_falls_back_to_the_file_store() {
+		with_file_store(|base| {
+			let backend = probe_keyring(|| install_mock_keyring(true));
+			AuthStorage::set_credentials(ME, &credentials("auth-token")).unwrap();
+
+			assert_eq!(backend, StorageBackend::File);
+			assert!(session_file_exists(base));
+		});
+	}
+
+	#[test]
+	fn a_working_keyring_takes_over_from_the_file_store() {
+		with_file_store(|base| {
+			let backend = probe_keyring(|| install_mock_keyring(false));
+			AuthStorage::set_credentials(ME, &credentials("auth-token")).unwrap();
+
+			assert_eq!(backend, StorageBackend::Keyring);
+			assert!(!session_file_exists(base));
+		});
+	}
+
+	#[test]
+	fn a_missing_keyring_keeps_the_file_store() {
+		with_file_store(|base| {
+			let backend = probe_keyring(|| Err("no secret service".to_owned()));
+			AuthStorage::set_credentials(ME, &credentials("auth-token")).unwrap();
+
+			assert_eq!(backend, StorageBackend::File);
+			assert!(session_file_exists(base));
+		});
+	}
+
+	#[test]
+	fn a_second_init_keyring_reuses_the_first_probe() {
+		with_file_store(|_| {
+			let first = init_keyring();
+			keyring_core::unset_default_store();
+
+			assert_eq!(init_keyring(), first);
+			assert!(keyring_core::get_default_store().is_none());
+		});
+	}
+
+	#[test]
+	fn a_failed_probe_is_tried_again_and_a_usable_one_is_kept() {
+		let usable = Mutex::new(None);
+
+		assert_eq!(
+			cached(&usable, || StorageBackend::Unavailable),
+			StorageBackend::Unavailable
+		);
+		assert_eq!(
+			cached(&usable, || StorageBackend::File),
+			StorageBackend::File
+		);
+		assert_eq!(
+			cached(&usable, || unreachable!("a usable backend is probed once")),
+			StorageBackend::File
+		);
+	}
+
+	#[test]
+	fn probes_from_many_threads_never_overlap() {
+		let usable = Mutex::new(None);
+		let probing = Mutex::new(());
+		let start = Barrier::new(8);
+
+		std::thread::scope(|scope| {
+			for _ in 0..8 {
+				scope.spawn(|| {
+					start.wait();
+					cached(&usable, || {
+						let _probing = probing
+							.try_lock()
+							.expect("another probe is already running");
+						std::thread::sleep(Duration::from_millis(20));
+						StorageBackend::Unavailable
+					})
+				});
+			}
+		});
+	}
+
+	#[test]
+	fn the_probe_leaves_nothing_behind() {
+		with_file_store(|_| {
+			assert!(round_trips());
+			assert!(matches!(
+				entry("startup-probe").get_secret(),
+				Err(keyring_core::Error::NoEntry)
+			));
+		});
+	}
+
+	#[test]
+	fn a_store_that_cannot_round_trip_reads_as_unavailable() {
+		let _guard = lock();
+		keyring_core::unset_default_store();
+
+		assert!(!round_trips());
+	}
+
+	#[test]
+	fn nothing_is_stored_before_anything_is_saved() {
+		with_file_store(|_| {
+			assert!(DeviceStorage::load(ME).unwrap().is_none());
+			assert!(AuthStorage::get_session(ME).unwrap().is_none());
+			assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+			assert_eq!(
+				AccountsStorage::load().unwrap(),
+				AccountIndex::default()
+			);
+		});
+	}
+
+	#[test]
+	fn a_device_survives_a_save_and_load() {
+		with_file_store(|_| {
+			let device = grindr::DeviceInfo::generate();
+
+			DeviceStorage::save(ME, &device).unwrap();
+
+			let loaded = DeviceStorage::load(ME).unwrap().unwrap();
+			assert_eq!(format!("{loaded:?}"), format!("{device:?}"));
+		});
+	}
+
+	#[test]
+	fn a_device_stored_before_build_id_existed_still_loads() {
+		#[derive(serde::Serialize)]
+		struct DeviceBeforeBuildId {
+			device_type: u8,
+			device_id: &'static str,
+			os: &'static str,
+			screen_resolution: &'static str,
+			total_ram: &'static str,
+			advertising_id: &'static str,
+			device_model: &'static str,
+			manufacturer: &'static str,
+			timezone: &'static str,
+			locale: &'static str,
+			accept_language: &'static str,
+		}
+
+		with_file_store(|_| {
+			let stored = rmp_serde::encode::to_vec(&DeviceBeforeBuildId {
+				device_type: 2,
+				device_id: "0123456789abcdef",
+				os: "Android 14",
+				screen_resolution: "2400x1080",
+				total_ram: "8026152960",
+				advertising_id: "ad-id",
+				device_model: "Pixel 8",
+				manufacturer: "Google",
+				timezone: "Europe/Madrid",
+				locale: "en_US",
+				accept_language: "en-US",
+			})
+			.unwrap();
+			entry("device-info:42").set_secret(&stored).unwrap();
+
+			let loaded = DeviceStorage::load(ME).unwrap().unwrap();
+
+			assert_eq!(loaded.device_id, "0123456789abcdef");
+			assert_eq!(loaded.device_model, "Pixel 8");
+			assert!(loaded.build_id.is_empty());
+		});
+	}
+
+	#[test]
+	fn every_secret_is_stored_as_a_named_map_not_a_positional_array() {
+		with_file_store(|_| {
+			DeviceStorage::save(ME, &grindr::DeviceInfo::generate()).unwrap();
+			AuthStorage::set_credentials(ME, &credentials("s1")).unwrap();
+			SigningKeyStorage::save(ME, &signing_key()).unwrap();
+			AccountsStorage::save(&AccountIndex::default()).unwrap();
+
+			for name in [
+				"device-info:42",
+				"session:42",
+				"device-signing-key:42",
+				"accounts",
+			] {
+				let stored = entry(name).get_secret().unwrap();
+				let decoded: serde_json::Value =
+					rmp_serde::from_slice(&stored).unwrap();
+
+				assert!(
+					decoded.is_object(),
+					"{name} is a positional array, not a named map"
+				);
+			}
+		});
+	}
+
+	#[test]
+	fn a_device_that_cannot_be_decoded_is_reported_as_an_error() {
+		with_file_store(|_| {
+			entry("device-info:42").set_secret(b"not msgpack").unwrap();
+
+			assert!(DeviceStorage::load(ME).is_err());
+		});
+	}
+
+	#[test]
+	fn a_created_device_is_persisted_for_the_next_launch() {
+		with_file_store(|_| {
+			let created = DeviceStorage::load_or_create(ME);
+
+			assert_eq!(
+				format!("{:?}", DeviceStorage::load_or_create(ME)),
+				format!("{created:?}")
+			);
+		});
+	}
+
+	#[test]
+	fn a_device_that_cannot_be_decoded_is_replaced_rather_than_regenerated_forever(
+	) {
+		with_file_store(|_| {
+			entry("device-info:42").set_secret(b"not msgpack").unwrap();
+
+			let replacement = DeviceStorage::load_or_create(ME);
+
+			assert_eq!(
+				format!("{:?}", DeviceStorage::load(ME).unwrap().unwrap()),
+				format!("{replacement:?}")
+			);
+		});
+	}
+
+	#[test]
+	fn deleting_the_device_clears_it() {
+		with_file_store(|_| {
+			DeviceStorage::save(ME, &grindr::DeviceInfo::generate()).unwrap();
+
+			DeviceStorage::delete(ME);
+
+			assert!(DeviceStorage::load(ME).unwrap().is_none());
+		});
+	}
+
+	#[test]
+	fn credentials_survive_a_save_and_load() {
+		with_file_store(|_| {
+			let saved = credentials("auth-token");
+
+			AuthStorage::set_credentials(ME, &saved).unwrap();
+
+			let loaded = AuthStorage::get_credentials(ME).unwrap().unwrap();
+			assert_eq!(loaded.auth_token, saved.auth_token);
+			assert_eq!(loaded.email, saved.email);
+			assert_eq!(loaded.profile_id, saved.profile_id);
+		});
+	}
+
+	#[test]
+	fn a_resumed_session_carries_no_token() {
+		with_file_store(|_| {
+			AuthStorage::set_credentials(ME, &credentials("auth-token"))
+				.unwrap();
+
+			let session = AuthStorage::get_session(ME).unwrap().unwrap();
+
+			assert_eq!(session.credentials.auth_token, "auth-token");
+			assert!(
+				session.token.is_none(),
+				"the minted session id dies within the hour and is never stored"
+			);
+		});
+	}
+
+	#[test]
+	fn a_session_written_by_an_older_build_still_reads_back() {
+		with_file_store(|_| {
+			entry("session:42")
+				.set_secret(&legacy_session_blob(ME, "old-session"))
+				.unwrap();
+
+			let loaded = AuthStorage::get_credentials(ME).unwrap().unwrap();
+
+			assert_eq!(loaded.auth_token, "auth-token");
+			assert_eq!(loaded.email, "user@example.com");
+			assert_eq!(loaded.profile_id.as_deref(), Some("42"));
+		});
+	}
+
+	#[test]
+	fn a_session_that_cannot_be_decoded_is_discarded_rather_than_kept() {
+		with_file_store(|_| {
+			entry("session:42").set_secret(b"not msgpack").unwrap();
+
+			assert!(AuthStorage::get_session(ME).unwrap().is_none());
+			assert!(matches!(
+				entry("session:42").get_secret(),
+				Err(keyring_core::Error::NoEntry)
+			));
+		});
+	}
+
+	#[test]
+	fn setting_a_session_replaces_the_previous_one() {
+		with_file_store(|_| {
+			AuthStorage::set_credentials(ME, &credentials("first")).unwrap();
+			AuthStorage::set_credentials(ME, &credentials("second")).unwrap();
+
+			assert_eq!(
+				AuthStorage::get_credentials(ME)
+					.unwrap()
+					.unwrap()
+					.auth_token,
+				"second"
+			);
+		});
+	}
+
+	#[test]
+	fn deleting_the_session_clears_it() {
+		with_file_store(|_| {
+			AuthStorage::set_credentials(ME, &credentials("auth-token"))
+				.unwrap();
+
+			AuthStorage::delete_session(ME);
+
+			assert!(AuthStorage::get_session(ME).unwrap().is_none());
+		});
+	}
+
+	#[test]
+	fn a_signing_key_survives_a_save_and_load() {
+		with_file_store(|_| {
+			let key = signing_key();
+
+			SigningKeyStorage::save(ME, &key).unwrap();
+
+			let loaded = SigningKeyStorage::load(ME).unwrap().unwrap();
+			assert_eq!(format!("{loaded:?}"), format!("{key:?}"));
+		});
+	}
+
+	#[test]
+	fn a_signing_key_that_cannot_be_decoded_reads_as_absent() {
+		with_file_store(|_| {
+			entry("device-signing-key:42")
+				.set_secret(b"not msgpack")
+				.unwrap();
+
+			assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+		});
+	}
+
+	#[test]
+	fn a_signing_key_the_client_refuses_is_dropped_from_storage() {
+		with_file_store(|_| {
+			SigningKeyStorage::save(ME, &signing_key()).unwrap();
+			let client = grindr::GrindrClient::new(
+				grindr::DeviceInfo::generate(),
+				Some(session("session-token")),
+			)
+			.unwrap();
+
+			tokio::runtime::Builder::new_current_thread()
+				.build()
+				.unwrap()
+				.block_on(SigningKeyStorage::restore(ME, &client));
+
+			assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+		});
+	}
+
+	#[test]
+	fn deleting_the_signing_key_clears_it() {
+		with_file_store(|_| {
+			SigningKeyStorage::save(ME, &signing_key()).unwrap();
+
+			SigningKeyStorage::delete(ME);
+
+			assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+		});
+	}
+
+	fn record(profile_id: ProfileId, label: &str) -> AccountRecord {
+		AccountRecord {
+			profile_id,
+			label: label.to_owned(),
+			name: None,
+			avatar: None,
+			google: false,
+			added_at: profile_id,
+		}
+	}
+
+	fn google_record(profile_id: ProfileId, shown: &str) -> AccountRecord {
+		AccountRecord {
+			google: true,
+			..record(profile_id, shown)
+		}
+	}
+
+	#[test]
+	fn an_email_login_shows_its_email() {
+		assert_eq!(
+			record(ME, "me@example.com").email(),
+			Some("me@example.com")
+		);
+	}
+
+	#[test]
+	fn a_third_party_login_has_no_email_to_show() {
+		// What Grindr hands back for a Google sign-in: an opaque display id in
+		// the same field an email would be in. Showing it raw is what put
+		// `Q60CB36Z47` in front of the user.
+		assert_eq!(google_record(ME, "Q60CB36Z47").email(), None);
+		// Even when the vendor id happens to look like an address, it is not the
+		// account's email and must not be presented as one.
+		assert_eq!(google_record(ME, "not-really@vendor").email(), None);
+	}
+
+	#[test]
+	fn a_label_that_is_not_an_address_is_not_offered_as_one() {
+		assert_eq!(record(ME, "162863583").email(), None);
+	}
+
+	#[test]
+	fn the_profile_learned_while_active_is_remembered() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+
+			AccountsStorage::set_profile(
+				ME,
+				Some("Tiago".to_owned()),
+				Some("abc123".to_owned()),
+			)
+			.unwrap();
+
+			let stored = AccountsStorage::load().unwrap();
+			assert_eq!(stored.accounts[0].name.as_deref(), Some("Tiago"));
+			assert_eq!(stored.accounts[0].avatar.as_deref(), Some("abc123"));
+		});
+	}
+
+	#[test]
+	fn signing_in_again_keeps_the_name_already_learned() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+			AccountsStorage::set_profile(
+				ME,
+				Some("Tiago".to_owned()),
+				Some("abc123".to_owned()),
+			)
+			.unwrap();
+
+			// Re-authenticating carries no profile with it, and must not wipe
+			// the row back to a bare login id.
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+
+			let stored = AccountsStorage::load().unwrap();
+			assert_eq!(stored.accounts[0].name.as_deref(), Some("Tiago"));
+			assert_eq!(stored.accounts[0].avatar.as_deref(), Some("abc123"));
+		});
+	}
+
+	#[test]
+	fn naming_an_account_that_is_gone_is_ignored() {
+		with_file_store(|_| {
+			AccountsStorage::set_profile(THEM, Some("Nobody".to_owned()), None)
+				.unwrap();
+
+			assert!(AccountsStorage::load().unwrap().accounts.is_empty());
+		});
+	}
+
+	#[test]
+	fn an_index_written_before_names_existed_still_loads() {
+		with_file_store(|_| {
+			// The shape shipped by the first multi-account build: no name, no
+			// avatar, no login kind. It must not strand the accounts in it.
+			let legacy = serde_json::json!({
+				"accounts": [
+					{ "profile_id": ME, "label": "me@example.com", "added_at": 1 }
+				],
+				"active": ME,
+			});
+			entry("accounts")
+				.set_secret(&rmp_serde::encode::to_vec_named(&legacy).unwrap())
+				.unwrap();
+
+			let index = AccountsStorage::load().unwrap();
+
+			assert_eq!(index.accounts.len(), 1);
+			assert_eq!(index.accounts[0].label, "me@example.com");
+			assert_eq!(index.accounts[0].name, None);
+			assert!(!index.accounts[0].google);
+			assert_eq!(index.resolved_active(), Some(ME));
+		});
+	}
+
+	#[test]
+	fn an_added_account_becomes_the_active_one() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+			let index =
+				AccountsStorage::upsert(record(THEM, "them@example.com"))
+					.unwrap();
+
+			assert_eq!(index.active, Some(THEM));
+			assert_eq!(index.accounts.len(), 2);
+		});
+	}
+
+	#[test]
+	fn signing_into_the_same_account_twice_lists_it_once() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "old@example.com")).unwrap();
+			let index =
+				AccountsStorage::upsert(record(ME, "new@example.com")).unwrap();
+
+			assert_eq!(index.accounts.len(), 1);
+			assert_eq!(index.accounts[0].label, "new@example.com");
+		});
+	}
+
+	#[test]
+	fn removing_the_active_account_hands_over_to_another() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+			AccountsStorage::upsert(record(THEM, "them@example.com")).unwrap();
+
+			let index = AccountsStorage::remove(THEM).unwrap();
+
+			assert_eq!(index.active, Some(ME));
+			assert_eq!(index.resolved_active(), Some(ME));
+		});
+	}
+
+	#[test]
+	fn removing_the_last_account_leaves_nothing_active() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(ME, "me@example.com")).unwrap();
+
+			let index = AccountsStorage::remove(ME).unwrap();
+
+			assert!(index.accounts.is_empty());
+			assert_eq!(index.resolved_active(), None);
+		});
+	}
+
+	#[test]
+	fn an_active_pointer_at_an_account_that_is_gone_falls_back() {
+		let index = AccountIndex {
+			accounts: vec![record(ME, "me@example.com")],
+			active: Some(THEM),
+		};
+
+		assert_eq!(index.resolved_active(), Some(ME));
+	}
+
+	#[test]
+	fn an_unreadable_account_index_starts_over_rather_than_failing() {
+		with_file_store(|_| {
+			entry("accounts").set_secret(b"not msgpack").unwrap();
+
+			assert_eq!(
+				AccountsStorage::load().unwrap(),
+				AccountIndex::default()
+			);
+			assert!(matches!(
+				entry("accounts").get_secret(),
+				Err(keyring_core::Error::NoEntry)
+			));
+		});
+	}
+
+	#[test]
+	fn the_existing_single_account_install_is_adopted_under_its_profile() {
+		with_file_store(|_| {
+			let device = grindr::DeviceInfo::generate();
+			entry("session")
+				.set_secret(&legacy_session_blob(ME, "legacy-token"))
+				.unwrap();
+			entry("device-info")
+				.set_secret(&rmp_serde::encode::to_vec_named(&device).unwrap())
+				.unwrap();
+			entry("device-signing-key")
+				.set_secret(
+					&rmp_serde::encode::to_vec_named(&signing_key()).unwrap(),
+				)
+				.unwrap();
+
+			adopt_legacy_account().unwrap();
+
+			let index = AccountsStorage::load().unwrap();
+			assert_eq!(index.active, Some(ME));
+			assert_eq!(index.accounts.len(), 1);
+			assert_eq!(index.accounts[0].label, "user@example.com");
+			assert_eq!(
+				AuthStorage::get_credentials(ME)
+					.unwrap()
+					.unwrap()
+					.auth_token,
+				"auth-token"
+			);
+			assert_eq!(
+				DeviceStorage::load(ME).unwrap().unwrap().device_id,
+				device.device_id,
+				"the account has to keep the device it was signed in with"
+			);
+			assert!(SigningKeyStorage::load(ME).unwrap().is_some());
+			for name in ["session", "device-info", "device-signing-key"] {
+				assert!(
+					matches!(
+						entry(name).get_secret(),
+						Err(keyring_core::Error::NoEntry)
+					),
+					"{name} should have been moved, not copied"
+				);
+			}
+		});
+	}
+
+	#[test]
+	fn adopting_runs_once_and_leaves_a_populated_index_alone() {
+		with_file_store(|_| {
+			AccountsStorage::upsert(record(THEM, "them@example.com")).unwrap();
+			entry("session")
+				.set_secret(&legacy_session_blob(ME, "legacy"))
+				.unwrap();
+
+			adopt_legacy_account().unwrap();
+
+			let index = AccountsStorage::load().unwrap();
+			assert_eq!(index.accounts.len(), 1);
+			assert_eq!(index.accounts[0].profile_id, THEM);
+			assert!(AuthStorage::get_session(ME).unwrap().is_none());
+		});
+	}
+
+	#[test]
+	fn a_signed_out_install_has_nothing_to_adopt_and_keeps_no_leftovers() {
+		with_file_store(|_| {
+			entry("device-info")
+				.set_secret(
+					&rmp_serde::encode::to_vec_named(
+						&grindr::DeviceInfo::generate(),
+					)
+					.unwrap(),
+				)
+				.unwrap();
+
+			adopt_legacy_account().unwrap();
+
+			assert!(AccountsStorage::load().unwrap().accounts.is_empty());
+			assert!(matches!(
+				entry("device-info").get_secret(),
+				Err(keyring_core::Error::NoEntry)
+			));
+		});
+	}
+
+	#[test]
+	fn with_no_store_at_all_the_storages_report_errors_instead_of_panicking() {
+		let _guard = lock();
+		keyring_core::unset_default_store();
+
+		assert!(DeviceStorage::load(ME).is_err());
+		assert!(AuthStorage::get_session(ME).unwrap().is_none());
+		assert!(SigningKeyStorage::load(ME).unwrap().is_none());
+		assert!(AuthStorage::set_credentials(ME, &credentials("auth-token"))
+			.is_err());
+		assert!(AccountsStorage::save(&AccountIndex::default()).is_err());
+		DeviceStorage::delete(ME);
+		AuthStorage::delete_session(ME);
+		SigningKeyStorage::delete(ME);
+	}
+}

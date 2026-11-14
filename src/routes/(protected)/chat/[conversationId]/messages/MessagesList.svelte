@@ -1,0 +1,239 @@
+<script lang="ts">
+	import { toast } from "svelte-sonner";
+
+	import { promptCopyError } from "#lib/api/error-copy.ts";
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import { tieredFeature } from "#lib/api/error-urn.ts";
+	import {
+		forgetAlbumShared,
+		getAlbumShared,
+		setAlbumShared,
+	} from "#lib/api/messaging/album-shares-state.svelte.ts";
+	import { unshareAlbum } from "#lib/api/messaging/albums.ts";
+	import {
+		deleteMessageForMe,
+		unsendMessage,
+	} from "#lib/api/messaging/messages.ts";
+	import ReportSheet from "#lib/components/report/ReportSheet.svelte";
+	import { withRegionGrant } from "#lib/entitlements/expiring-media-entitlement.ts";
+	import { openExternalLink } from "#lib/platform/link-opener.ts";
+	import type { ApiResponseMessage } from "#lib/model/messaging/messages.ts";
+	import {
+		getConversationState,
+		type OptimisticMessage,
+	} from "../conversation-state.svelte";
+	import { processMessages } from "../messages";
+	import { setMediaRenewal } from "./message/media-renewal";
+	import Message from "./message/Message.svelte";
+
+	let { seenMessageIds }: { seenMessageIds: Set<string> } = $props();
+
+	let reportOpen = $state(false);
+	let reportProfileId = $state<number | null>(null);
+
+	const conversationState = $derived(getConversationState()());
+	setMediaRenewal(() => conversationState.dynamicRefresh.renewMedia());
+
+	const ALBUM_MESSAGE_TYPES = ["Album", "ExpiringAlbum", "ExpiringAlbumV2"];
+
+	/**
+	 * The album to offer unsharing for, or null when the message isn't an album
+	 * we own. Keyed off ownerProfileId rather than who sent the message: a
+	 * forwarded album is not ours to unshare.
+	 */
+	function albumIdToUnshare(message: ApiResponseMessage): number | null {
+		if (!ALBUM_MESSAGE_TYPES.includes(message.type)) return null;
+		const body = message.body as {
+			albumId?: number;
+			ownerProfileId?: number | null;
+		};
+		if (body.ownerProfileId !== conversationState.ourProfileId) return null;
+		const albumId = body.albumId;
+		if (albumId === undefined) return null;
+
+		// The message is a snapshot from when it was sent and does not change when
+		// the share is revoked, so drop the action once we know it is gone.
+		// Unknown still offers it: the API tolerates unsharing what isn't shared,
+		// and hiding it on a guess would strand a share that is still live.
+		const profileId = conversationState.profile?.profileId;
+		if (
+			profileId !== undefined &&
+			getAlbumShared(albumId, profileId) === false
+		) {
+			return null;
+		}
+		return albumId;
+	}
+
+	// Layout is looked up by id so an unchanged message keeps its props.
+	const layoutByMessageId = $derived(
+		new Map(
+			processMessages({
+				messages: conversationState.messages,
+				ourProfileId: conversationState.ourProfileId,
+			}).map((layout) => [layout.messageId, layout] as const),
+		),
+	);
+
+	// Oldest first, the way they are read down the screen — which is also the
+	// order a run of voice notes plays in.
+	const rendered = $derived(conversationState.messages.toReversed());
+
+	// A failed send never reached the server, so it only goes locally.
+	async function deleteForMe(message: OptimisticMessage) {
+		const { revert } = conversationState.remove(message.messageId);
+		if (message.status === "error") return;
+		try {
+			await deleteMessageForMe({
+				conversationId: conversationState.conversationId,
+				messageId: message.messageId,
+			});
+		} catch (error) {
+			console.error(error);
+			showErrorToast({ label: "Failed to delete message", error });
+			revert();
+		}
+	}
+
+	function reportUnsendFailure(error: unknown) {
+		if (tieredFeature(error) === "UnsentMessage") {
+			toast.error("Unsend feature now requires Grindr subscription", {
+				id: "unsend-paywall",
+				action: {
+					label: "Learn more",
+					onClick: () =>
+						openExternalLink(
+							"https://git.opengrind.org/open-grind/open-grind/issues/319#issuecomment-2453",
+						),
+				},
+			});
+			return;
+		}
+		showErrorToast({ label: "Failed to unsend message", error });
+	}
+</script>
+
+{#each rendered as message, index (message.messageId)}
+	{@const isOut = message.senderId === conversationState.ourProfileId}
+	{@const after = rendered[index + 1]}
+	{@const delivered = message.status === "sent"}
+	{@const layout = layoutByMessageId.get(message.messageId)}
+	<Message
+		{message}
+		nextAudioMessageId={after?.type === "Audio"
+			? after.messageId
+			: undefined}
+		{isOut}
+		indexInStack={layout?.indexInStack ?? 0}
+		stackLength={layout?.stackLength ?? 1}
+		dayStart={layout?.dayStart}
+		status={message.status}
+		isRead={isOut &&
+		message.messageId === conversationState.messages[0]?.messageId
+			? conversationState.lastReadTimestamp === message.timestamp
+			: null}
+		onVisible={!isOut
+			? () => {
+					seenMessageIds.add(message.messageId);
+					conversationState.reportRead(message);
+				}
+			: undefined}
+		onDelete={message.status === "pending"
+			? undefined
+			: () => void deleteForMe(message)}
+		onReply={delivered && !message.unsent
+			? () => conversationState.setReplyTo(message)
+			: undefined}
+		onReport={!isOut && conversationState.profile
+			? () => {
+					reportProfileId =
+						conversationState.profile?.profileId ?? null;
+					reportOpen = reportProfileId !== null;
+				}
+			: undefined}
+		onReact={delivered
+			? async (reactionType: number) => {
+					try {
+						await conversationState.reactTo({
+							messageId: message.messageId,
+							reactionType,
+						});
+					} catch (error) {
+						console.error(error);
+						showErrorToast({
+							label: "Failed to react to message",
+							error,
+						});
+					}
+				}
+			: undefined}
+		onUnsend={isOut && delivered && !message.unsent
+			? async () => {
+					let revert: (() => void) | undefined;
+					try {
+						({ revert } = conversationState.markMessageAsUnsent(
+							message.messageId,
+						));
+						// A region-gated refusal grants and unsends
+						// again, unseen.
+						await withRegionGrant(() =>
+							unsendMessage({
+								conversationId:
+									conversationState.conversationId,
+								messageId: message.messageId,
+							}),
+						);
+					} catch (error) {
+						console.error(error);
+						reportUnsendFailure(error);
+						revert?.();
+					}
+				}
+			: undefined}
+		onUnshareAlbum={albumIdToUnshare(message) !== null
+			? async () => {
+					const albumId = albumIdToUnshare(message);
+					const profileId = conversationState.profile?.profileId;
+					if (albumId === null || profileId === undefined) return;
+					// Optimistically lock the album bubble(s) so they show as no
+					// longer viewable straight away; revert if the request
+					// fails. The share state goes with them: a bubble reads it
+					// over its own body, so leaving it saying "shared" would
+					// keep the lock off until the request came back.
+					const wasShared = getAlbumShared(albumId, profileId);
+					const { revert } =
+						conversationState.lockSharedAlbum(albumId);
+					setAlbumShared(albumId, profileId, false);
+					try {
+						await unshareAlbum({
+							albumId,
+							profileIds: [profileId],
+						});
+						toast.success("Album unshared");
+					} catch (error) {
+						console.error(error);
+						showErrorToast({
+							label: "Failed to unshare album",
+							error,
+						});
+						revert();
+						if (wasShared === undefined)
+							forgetAlbumShared(albumId, profileId);
+						else setAlbumShared(albumId, profileId, wasShared);
+					}
+				}
+			: undefined}
+		onCopyError={message.status === "error"
+			? () => void promptCopyError(message.sendError).catch(() => {})
+			: undefined}
+	/>
+{/each}
+
+{#if reportProfileId !== null}
+	<ReportSheet
+		bind:open={reportOpen}
+		profileId={reportProfileId}
+		subject="message"
+		locations={["CHAT_MESSAGE"]}
+	/>
+{/if}

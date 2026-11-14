@@ -1,0 +1,108 @@
+<script lang="ts">
+	import { untrack } from "svelte";
+
+	import { ensureFavoriteNotes } from "#lib/api/users/favorite-notes-state.svelte.ts";
+	import { getProfileGridColumnsSnapshot } from "#lib/app-data/preferences.svelte.ts";
+	import ApiErrorDisplay from "#lib/components/feedback/ApiErrorDisplay.svelte";
+	import DataRefreshControl from "#lib/components/feedback/DataRefreshControl.svelte";
+	import ScrollToTopButton from "#lib/components/shared/ScrollToTopButton.svelte";
+	import { Skeleton } from "#lib/components/ui/skeleton/index.ts";
+	import { observeIntersection } from "#lib/util/observe-intersection.ts";
+	import { restoreScrollOnce } from "#lib/util/scroll-restore.svelte.ts";
+	import EmptyViewsGrid from "./EmptyViewsGrid.svelte";
+	import UntrackedViewsGrid from "./UntrackedViewsGrid.svelte";
+	import ViewedPreview from "./ViewedPreview.svelte";
+	import ViewedProfile from "./ViewedProfile.svelte";
+	import { getViewsState } from "./views-state.svelte";
+
+	let { ourProfileId }: { ourProfileId: number } = $props();
+
+	const views = untrack(() => {
+		const state = getViewsState(ourProfileId);
+		state.load();
+		return state;
+	});
+
+	// Any viewer can be a favorite, so the notes are read once for the whole
+	// grid rather than per card — the same list the browse grid shares.
+	$effect(() => {
+		void ensureFavoriteNotes();
+	});
+
+	let container: HTMLDivElement | null = $state(null);
+
+	restoreScrollOnce({ container: () => container, state: views });
+</script>
+
+<div class="screen-nav-host">
+	{#if !views.loading && (views.views.length > 0 || !views.error)}
+		<DataRefreshControl
+			{container}
+			updating={views.refreshing}
+			position="top"
+			onrefresh={() => void views.refresh()}
+		/>
+	{/if}
+	<div
+		bind:this={container}
+		data-slot="views-scroller"
+		class="pull-scroller overscroll-x-auto"
+		onscroll={() => (views.scrollY = container?.scrollTop ?? 0)}
+	>
+		<div
+			data-refresh-content
+			class="@container/photo-grid min-h-overscrollable flex w-full flex-col gap-3 pt-(--interest-header) pb-nav-clear"
+		>
+			{#if views.loading}
+				<div
+					class="photo-grid"
+					data-grid-columns={getProfileGridColumnsSnapshot()}
+				>
+					{#each Array(24)}
+						<Skeleton class="aspect-square rounded-none" />
+					{/each}
+				</div>
+			{:else if views.error && views.views.length === 0}
+				<div class="flex flex-1">
+					<ApiErrorDisplay
+						error={views.error}
+						onRetry={() => views.retry()}
+						class="m-auto"
+					/>
+				</div>
+			{:else if views.views.length === 0 && views.viewedMeHidden}
+				<UntrackedViewsGrid
+					enabling={views.enablingViewedMe}
+					onEnable={() => void views.enableViewedMeTracking()}
+				/>
+			{:else if views.views.length === 0}
+				<EmptyViewsGrid />
+			{:else}
+				<div
+					class="photo-grid"
+					data-grid-columns={getProfileGridColumnsSnapshot()}
+				>
+					{#each views.views as entry (entry.key)}
+						{#if entry.type === "profile"}
+							<ViewedProfile view={entry.profile} />
+						{:else if entry.type === "matched"}
+							<ViewedProfile view={entry.viewer} />
+						{:else}
+							<ViewedPreview preview={entry.preview} />
+						{/if}
+					{/each}
+				</div>
+				{#if views.hasMore}
+					<div
+						class="h-0"
+						use:observeIntersection={{
+							handle: () => views.loadMore(),
+							rootMargin: "400px",
+						}}
+					></div>
+				{/if}
+			{/if}
+		</div>
+	</div>
+	<ScrollToTopButton {container} class="bottom-nav-clear" />
+</div>

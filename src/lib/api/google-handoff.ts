@@ -1,0 +1,111 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { goto } from "$app/navigation";
+import { toast } from "svelte-sonner";
+
+import { signedInProfileId } from "#lib/api/current-session.ts";
+import {
+	confirmAccountSwitch,
+	googleHandoffState,
+} from "#lib/api/google-handoff-state.svelte.ts";
+import { signInResultSchema } from "#lib/api/methods.ts";
+import { finishSignIn, reportSignInFailure } from "#lib/api/sign-in.ts";
+import { clearAccountState } from "#lib/api/sign-out.ts";
+import { isAndroidPlatform } from "#lib/platform/os.ts";
+import { delay } from "#lib/util/delay.ts";
+
+const HANDOFF_EVENT = "google-oauth:handoff";
+const READY_ATTEMPTS = 25;
+const READY_POLL_MS = 200;
+
+const available = () => !__DEMO__ && isTauri() && isAndroidPlatform();
+
+async function pending(): Promise<boolean> {
+	try {
+		return (await invoke<boolean>("google_handoff_pending")) === true;
+	} catch (error) {
+		console.error(error);
+		return false;
+	}
+}
+
+async function discard(): Promise<void> {
+	try {
+		await invoke("discard_google_handoff");
+	} catch (error) {
+		console.error(error);
+	}
+}
+
+async function exchange() {
+	const result = await invoke("sign_in_with_google_handoff");
+	return result === null || result === undefined
+		? null
+		: signInResultSchema.parse(result);
+}
+
+let running: Promise<void> | null = null;
+
+async function backendAnswers(): Promise<boolean> {
+	for (let attempt = 0; attempt < READY_ATTEMPTS; attempt++) {
+		if (await invoke<boolean>("backend_ready").catch(() => false)) {
+			return true;
+		}
+		await delay(READY_POLL_MS);
+	}
+	return false;
+}
+
+async function mayHaveSession(): Promise<boolean> {
+	if (!(await backendAnswers())) return true;
+	return (await signedInProfileId()) !== null;
+}
+
+async function consume(): Promise<void> {
+	if (!(await pending())) return;
+
+	let replacingAccount = false;
+	if (await mayHaveSession()) {
+		if (!(await confirmAccountSwitch())) {
+			await discard();
+			return;
+		}
+		replacingAccount = true;
+	} else {
+		googleHandoffState.phase = "signingIn";
+		await goto("/auth/sign-in/google");
+	}
+
+	try {
+		const result = await exchange();
+		if (!result) {
+			toast.error("That Google sign-in expired. Try again.");
+			return;
+		}
+		if (replacingAccount) await clearAccountState();
+		await finishSignIn(result);
+		if (result.restriction) await goto("/auth/sign-in");
+	} catch (error) {
+		reportSignInFailure({ error, label: "Sign in with Google" });
+		if (!replacingAccount) await goto("/auth/sign-in/google");
+	} finally {
+		googleHandoffState.phase = "idle";
+	}
+}
+
+export function consumeGoogleHandoff(): Promise<void> {
+	running ??= consume().finally(() => {
+		running = null;
+	});
+	return running;
+}
+
+export async function startGoogleHandoffWatch(): Promise<() => void> {
+	if (!available()) return () => {};
+
+	const unlisten = await listen(HANDOFF_EVENT, () => {
+		void consumeGoogleHandoff();
+	});
+	void consumeGoogleHandoff();
+	return unlisten;
+}

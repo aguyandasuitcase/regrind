@@ -1,0 +1,1501 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+@custom-variant hover (&:hover:where([data-hover-pointer] *));
+@custom-variant can-hover (&:where([data-hover-pointer] *));
+/* Set from the device's preference or the app's Reduce motion setting. */
+@custom-variant motion-reduce (&:where([data-reduce-motion] *));
+
+/* The "Nearby" palette (design_handoff_nearby_app/README.md § Design tokens).
+   Hex values are copied verbatim from the handoff table so the two can be
+   diffed by eye; the handoff's names are given in the comments.
+
+   Light is the default (:root); dark values live in the .dark block below and
+   are toggled onto <html> by theme.svelte.ts. Both themes are always defined
+   so the app renders correctly in either mode. The handoff's rule is that the
+   two themes are a straight token swap with no layout differences. */
+:root {
+	--radius: 0.75rem;
+	--background: #eceae6; /* bg */
+	--foreground: #1b1a18; /* ink */
+	--card: #f6f5f2; /* surface */
+	--card-foreground: #1b1a18;
+	--popover: #f6f5f2;
+	--popover-foreground: #1b1a18;
+	/* Pre-hydration fallback for primary actions, links and focus. Matches the
+	   default accent (yellow) in palette.ts so a fresh install doesn't flash a
+	   different color before preferences load. The handoff's own accent is
+	   #0B62E0 here / #3D8BFF dark — pick "Blue" in Appearance to get it. */
+	--primary: oklch(0.869 0.178 91);
+	--primary-foreground: oklch(0.22 0.02 91);
+	--secondary: #e1dfda; /* surface2 */
+	--secondary-foreground: #1b1a18;
+	--muted: #e1dfda; /* surface2 */
+	--muted-foreground: #55534d; /* ink2 */
+	--accent: oklch(0.869 0.178 91);
+	--accent-foreground: oklch(0.22 0.02 91);
+	--destructive: #d93f52;
+	--border: #cac7c0; /* line */
+	--input: #e1dfda; /* surface2 — chips and inputs share one fill */
+	--ring: oklch(0.869 0.178 91);
+	--chart-1: oklch(0.869 0.178 91);
+	--chart-2: #1b8a4c;
+	--chart-3: #55534d;
+	--chart-4: #847f77;
+	--chart-5: #d93f52;
+	--sidebar: #f6f5f2;
+	--sidebar-foreground: #1b1a18;
+	--sidebar-primary: oklch(0.869 0.178 91);
+	--sidebar-primary-foreground: oklch(0.22 0.02 91);
+	--sidebar-accent: #e1dfda;
+	--sidebar-accent-foreground: #1b1a18;
+	--sidebar-border: #cac7c0;
+	--sidebar-ring: oklch(0.869 0.178 91);
+	/* Tertiary text and inactive icons — tab bar labels, timestamps, captions.
+	   Sits between --muted-foreground (ink2) and the surfaces. */
+	--ink3: #847f77;
+	/* The one green in the design: the online dot, and nothing else. */
+	--online: #1b8a4c;
+	/* Chat sits on the plain screen background — no wallpaper. */
+	--chat-background: #eceae6;
+	/* Untinted bubble surfaces. theme.svelte.ts overwrites these with the chosen
+	   bubble colors; they show through only before preferences hydrate, and as
+	   the "Neutral" bubble option, so the two sides stay distinguishable by
+	   shade alone. */
+	--message-bubble-in: #e1dfda;
+	--message-bubble-out: #e1dfda;
+	--message-bubble-foreground: #1b1a18;
+	--message-bubble-out-foreground: #1b1a18;
+	/* Neutral surface behind photos: avatar/grid placeholders, images that are
+	   still loading, locked media. Its foreground is for the icons and labels
+	   drawn on top of it. */
+	--media-placeholder: #e1dfda;
+	--media-placeholder-foreground: #847f77;
+	/* Chat's list pane width. Read back by +layout@(protected).svelte to size
+	   the resizable pane, so it has to stay a plain length. */
+	--stack-scrim: 0.8;
+	--stack-edge: -1px 0 0 oklch(1 0 0 / 10%);
+	--list-rail: 117px;
+	--safe-area-top: 0px;
+	--safe-area-bottom: 0px;
+	--safe-area-left: 0px;
+	--safe-area-right: 0px;
+}
+
+.dark {
+	--background: #0c0e11; /* bg */
+	--foreground: #eef2f7; /* ink */
+	--card: #14171c; /* surface */
+	--card-foreground: #eef2f7;
+	--popover: #14171c;
+	--popover-foreground: #eef2f7;
+	/* See the :root block: pre-hydration fallback, matching the default accent. */
+	--primary: oklch(0.869 0.178 91);
+	--primary-foreground: oklch(0.22 0.02 91);
+	--secondary: #1d2229; /* surface2 */
+	--secondary-foreground: #eef2f7;
+	--muted: #1d2229; /* surface2 */
+	--muted-foreground: #97a1ae; /* ink2 */
+	--accent: oklch(0.869 0.178 91);
+	--accent-foreground: oklch(0.22 0.02 91);
+	--destructive: #f0596b;
+	--border: #272d35; /* line */
+	--input: #1d2229; /* surface2 */
+	--ring: oklch(0.869 0.178 91);
+	--chart-1: oklch(0.869 0.178 91);
+	--chart-2: #4ed17f;
+	--chart-3: #97a1ae;
+	--chart-4: #68727f;
+	--chart-5: #f0596b;
+	--sidebar: #14171c;
+	--sidebar-foreground: #eef2f7;
+	--sidebar-primary: oklch(0.869 0.178 91);
+	--sidebar-primary-foreground: oklch(0.22 0.02 91);
+	--sidebar-accent: #1d2229;
+	--sidebar-accent-foreground: #eef2f7;
+	--sidebar-border: #272d35;
+	--sidebar-ring: oklch(0.869 0.178 91);
+	--ink3: #68727f;
+	--online: #4ed17f;
+	--chat-background: #0c0e11;
+	/* Untinted bubble surfaces — see the :root block above. */
+	--message-bubble-in: #1d2229;
+	--message-bubble-out: #1d2229;
+	--message-bubble-foreground: #eef2f7;
+	--message-bubble-out-foreground: #eef2f7;
+	--media-placeholder: #1d2229;
+	--media-placeholder-foreground: #68727f;
+}
+
+/* Photo-tile overlays. Deliberately theme-independent: a translucent plate over
+   a photo has to work against the photo, not the screen behind it, so the
+   handoff fixes one dark plate for both themes. `plate` is the feed weight,
+   `plate-strong` the saved-tile / circular-button weight. */
+:root,
+.dark {
+	--plate: rgb(8 10 13 / 0.66);
+	--plate-strong: rgb(8 10 13 / 0.72);
+	--plate-foreground: #eef2f7;
+	--plate-muted: #c2cbd6;
+	/* The foot of a tile's label gradient — see the .tile-scrim* classes. The
+	   people grids ramp to the heavier weight because a name and a note have to
+	   survive a bright photo; album covers carry a shorter label and take the
+	   lighter one. */
+	--plate-scrim: rgb(8 10 13 / 0.9);
+	--plate-scrim-soft: rgb(8 10 13 / 0.82);
+	/* The pencil glyph on a note line, and the only accent that stays light in
+	   both themes because it sits on a dark plate. */
+	--plate-accent: #7fb2ff;
+	/* "Tapped you" on a profile photo. Warm rather than the note's blue: it
+	   belongs to the flame beside it, and a tap is the one overlay that is
+	   somebody reaching for you rather than a label. */
+	--plate-tap: #f0b64a;
+}
+
+/* The full-screen media viewer (handoff § 09 Album viewer). Always dark, in both
+   themes — it is a media surface, and a light frame around somebody's photo
+   changes how the photo reads. The photo fills the screen and the chrome's bars
+   float over it, so `surface` is only what shows where the photo's aspect ratio
+   leaves room; `chip` is the reply field and the two round buttons beside it. */
+:root,
+.dark {
+	--viewer-surface: #14171c;
+	--viewer-chip: #1d2229;
+	--viewer-ink: #eef2f7;
+	--viewer-ink2: #97a1ae;
+	--viewer-ink3: #68727f;
+}
+
+/* Color selections. theme.svelte.ts sets data-accent on <html> and writes
+   --primary/--primary-foreground and the two bubble pairs onto it as inline
+   properties, sourced from src/lib/app-data/palette.ts. This block is what
+   fans --primary out to the rest of the family, so a color is defined in
+   exactly one place (the palette) rather than in a CSS block per color.
+   Declared after .dark so it wins in both themes. */
+[data-accent] {
+	--accent: var(--primary);
+	--ring: var(--primary);
+	--sidebar-primary: var(--primary);
+	--sidebar-ring: var(--primary);
+	--chart-1: var(--primary);
+	/* Foregrounds follow --primary-foreground so the light accents (yellow,
+	   lime) flip to dark text everywhere the accent is used as a surface. */
+	--accent-foreground: var(--primary-foreground);
+	--sidebar-primary-foreground: var(--primary-foreground);
+}
+
+@theme inline {
+	--font-sans: "IBM Plex Sans Variable", sans-serif;
+	--font-heading: "IBM Plex Sans Variable", sans-serif;
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--color-message-bubble-in: var(--message-bubble-in);
+	--color-message-bubble-out: var(--message-bubble-out);
+	--color-message-bubble-foreground: var(--message-bubble-foreground);
+	--color-message-bubble-out-foreground: var(--message-bubble-out-foreground);
+	--color-chat-background: var(--chat-background);
+	--color-media-placeholder: var(--media-placeholder);
+	--color-media-placeholder-foreground: var(--media-placeholder-foreground);
+	--color-ink3: var(--ink3);
+	--color-online: var(--online);
+	--color-plate: var(--plate);
+	--color-plate-strong: var(--plate-strong);
+	--color-plate-foreground: var(--plate-foreground);
+	--color-plate-muted: var(--plate-muted);
+	--color-plate-accent: var(--plate-accent);
+	--color-plate-tap: var(--plate-tap);
+	--color-plate-scrim: var(--plate-scrim);
+	--color-plate-scrim-soft: var(--plate-scrim-soft);
+	--color-viewer-surface: var(--viewer-surface);
+	--color-viewer-chip: var(--viewer-chip);
+	--color-viewer-ink: var(--viewer-ink);
+	--color-viewer-ink2: var(--viewer-ink2);
+	--color-viewer-ink3: var(--viewer-ink3);
+	/* Ladder tuned to native container radii: 6 / 8 / 12 / 16 / 20 / 24 / 28px at
+	   the 0.75rem base. Small controls sit at sm–md, list rows and cards at
+	   lg–xl, and only genuinely large surfaces (sheets, media tiles) reach 2xl+. */
+	--radius-sm: calc(var(--radius) * 0.5);
+	--radius-md: calc(var(--radius) * 0.6667);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) * 1.3333);
+	--radius-2xl: calc(var(--radius) * 1.6667);
+	--radius-3xl: calc(var(--radius) * 2);
+	--radius-4xl: calc(var(--radius) * 2.3333);
+
+	--container-row: 9rem;
+
+	/* An album cover is taller than it is wide but shallower than a photo — the
+	   handoff's .78 for a cover in a grid, .82 for a photo inside an album. */
+	--aspect-album: 0.78;
+	--aspect-album-photo: 0.82;
+
+	/* --text-scale is the Appearance text size, set by theme.svelte.ts. */
+	--text-xs: calc(0.75rem * var(--text-scale, 1));
+	--text-sm: calc(0.875rem * var(--text-scale, 1));
+	--text-base: calc(1rem * var(--text-scale, 1));
+	--text-lg: calc(1.125rem * var(--text-scale, 1));
+	--text-xl: calc(1.25rem * var(--text-scale, 1));
+	--text-2xl: calc(1.5rem * var(--text-scale, 1));
+	--text-3xl: calc(1.875rem * var(--text-scale, 1));
+	--text-4xl: calc(2.25rem * var(--text-scale, 1));
+	--text-2xs: calc(0.6875rem * var(--text-scale, 1)); /* 11px */
+	--text-3xs: calc(0.625rem * var(--text-scale, 1)); /* 10px */
+
+	/* The redesign's type scale (handoff § Typography). These are the half-pixel
+	   sizes the mocks are drawn at; the roles they name are the ones in the
+	   handoff table, so a screen can be checked against it by class name. */
+	--text-screen-title: calc(
+		1.6875rem * var(--text-scale, 1)
+	); /* 27px — Nearby / Inbox / Settings */
+	--text-section: calc(
+		0.59375rem * var(--text-scale, 1)
+	); /* 9.5px — ACCOUNT / PINNED / ABOUT */
+	--text-row: calc(
+		0.90625rem * var(--text-scale, 1)
+	); /* 14.5px — list row title */
+	/* A message bubble reads a step larger than a list row: it is the thing
+	   being read, not a label being scanned. */
+	--text-bubble: calc(
+		0.9375rem * var(--text-scale, 1)
+	); /* 15px — bubble text */
+	--text-preview: calc(
+		0.78125rem * var(--text-scale, 1)
+	); /* 12.5px — message preview, chip label */
+	--text-meta: calc(
+		0.71875rem * var(--text-scale, 1)
+	); /* 11.5px — timestamp, tile name plate */
+	--text-distance: calc(
+		0.65625rem * var(--text-scale, 1)
+	); /* 10.5px — distance overlay, bubble time */
+
+	/* Settings/list type scale, sitting between Tailwind's xs and base. `caption`
+	   covers group labels, footnotes and row descriptions; `body` is a list row
+	   title; `title` is a card heading such as the profile hero name. */
+	--text-caption: calc(0.8125rem * var(--text-scale, 1)); /* 13px */
+	/* Pushed-screen title, and the album name on the album editor. */
+	--text-detail: calc(1.25rem * var(--text-scale, 1)); /* 20px */
+	--text-album-name: calc(1.375rem * var(--text-scale, 1)); /* 22px */
+	--text-body: calc(0.9375rem * var(--text-scale, 1)); /* 15px */
+	--text-title: calc(1.0625rem * var(--text-scale, 1)); /* 17px */
+
+	/* Horizontal screen padding for lists and headers, and the gap either side
+	   of a screen title. */
+	--spacing-screen: 18px;
+	/* Inset of a tile's label plate and corner marker from the tile edge. */
+	--spacing-plate: 7px;
+	/* The unread dot. */
+	--spacing-dot: 7px;
+	/* Tile label plate corner. */
+	--radius-plate: 7px;
+	/* A "For you" card. */
+	--radius-pick: 10px;
+
+	--spacing-avatar: 37.5px;
+	--spacing-list-rail: var(--list-rail);
+	/* Where a list row's content column starts: ps-4 (16) + the size-16 avatar
+	   (64) + gap-3 (12). Row dividers are inset to it. */
+	--spacing-list-inset: 92px;
+}
+
+/* Keep in sync with src/lib/util/breakpoints.svelte.ts */
+@theme {
+	--breakpoint-split: 560px;
+	--breakpoint-settings-dialog: 424px;
+	--breakpoint-selection-bar-compact: 350px;
+	--breakpoint-selection-bar-collapse: 300px;
+	--breakpoint-cramped: 250px;
+}
+
+@theme {
+	/* The attachments drawer and anything that has to line up with it. 50rem is
+	   the 800px the drawer carried inline before it was named. */
+	--container-media-panel: 50rem;
+
+	/* Chat bubbles: 14pt all round, with the corner nearest the sender pulled in
+	   to 4pt on the last bubble of a stack — the redesign's replacement for a
+	   drawn tail. */
+	--radius-bubble: 14px;
+	--radius-bubble-tail: 4px;
+
+	/* Photo grids are edge-to-edge in the redesign, so the container's corners
+	   are square. The per-cell rounding rules below still run — they just
+	   resolve to 0 — so restoring a rounded grid is a one-token change. */
+	--radius-grid: 0px;
+
+	--radius-composer: 22px;
+
+	/* The gutter between photo tiles, and the grid's own margin wherever it sits
+	   inside a padded container (the attachments sheet) rather than edge to
+	   edge, so the spacing around the tiles reads as one value. */
+	--spacing-gutter: 2px;
+	--radius-chat-panel: 30px;
+
+	--z-index-modal: 130000;
+	--z-index-drop: 135000;
+	--z-index-toast: 140000;
+	--z-index-popover: 145000;
+	--z-index-safe-area: 150000;
+
+	--spacing-count-badge: 5.5px;
+
+	/* elbow that joins a quoted reply to the message replying to it */
+	--radius-quote-connector: 8px;
+
+	/* overlap that seams an SVG message tail onto its bubble */
+	--spacing-hairline: 0.5px;
+
+	--border-width-hairline: 0.5px;
+}
+
+/* .photo-grid column-count thresholds, queried against the nearest
+   @container/photo-grid ancestor. Values are the former viewport breakpoints
+   (360/640/768/1024/1280) minus 2rem page padding (p-4) so full-page grids
+   keep the same column counts (modulo a classic scrollbar's width, which
+   viewport queries included but a container's content box does not). */
+@theme {
+	--container-grid3: 328px;
+	--container-grid4: 608px;
+	--container-grid5: 736px;
+	--container-grid6: 992px;
+	--container-grid7: 1248px;
+}
+
+@theme {
+	--container-gif2: 200px;
+	--container-gif3: 320px;
+	--container-gaymoji4: 240px;
+	--container-gaymoji5: 320px;
+	--container-gaymoji6: 448px;
+	--container-gaymoji7: 560px;
+	--container-gaymoji8: 672px;
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+		font-size: calc(1rem * var(--text-scale, 1));
+	}
+	html {
+		@apply font-sans;
+	}
+	/* iOS's link/image preview menu fires no contextmenu, so blockNativeMenu
+	   cannot cancel it. */
+	a,
+	img {
+		-webkit-touch-callout: none;
+	}
+}
+
+/* The window height the software keyboard leaves over, written by
+   applyKeyboardInset to the root element; 100dvh until it says otherwise, and
+   on every platform but iOS. Screens that must end above the keyboard use this
+   in place of 100dvh — see keyboard-inset.ts.
+
+   Declared on :root alone, deliberately. The block below sets its tokens on
+   :root *and* body, and a copy on body would shadow what applyKeyboardInset
+   writes to the root for everything inside it — leaving the fallback to win
+   over a real keyboard. */
+:root {
+	--viewport-height: 100dvh;
+	/* What the software keyboard covers of the layout viewport, for elements
+	   fixed to its bottom edge — 0 until applyKeyboardInset says otherwise, and
+	   on every platform whose webview is resized around the keys instead. */
+	--keyboard-height: 0px;
+}
+
+:root,
+body {
+	/* Not 100dvh: with the keyboard up the app is sized to the window it leaves
+	   over, and a document taller than that hands WebKit room to scroll the
+	   composer back out of sight. */
+	min-height: var(--viewport-height);
+	/* No app-level rubber-banding; scroll containers opt back in via
+	   overscroll-behavior: contain for pull-to-refresh. */
+	overscroll-behavior: none;
+	user-select: none;
+	-webkit-user-select: none;
+	--nav-height: 4rem;
+	--slider-thumb-size: 1.5rem;
+	--selection-bar-height: 4.75rem;
+	--content-pb: calc(var(--nav-height) + var(--safe-area-bottom));
+	--screen-safe: calc(
+		var(--viewport-height) - var(--safe-area-top) - var(--safe-area-bottom)
+	);
+	/* Runs under the bottom navbar; pair with -mb-(--content-pb) and
+	   pb-nav-clear so content scrolls beneath the navbar's blur. */
+	--screen-nav: calc(var(--viewport-height) - var(--safe-area-top));
+	text-rendering: geometricPrecision;
+	image-rendering: optimizeQuality;
+	shape-rendering: geometricPrecision;
+}
+
+a {
+	-webkit-user-drag: none;
+}
+
+[class^="scroll-lock-"] {
+	overflow: hidden;
+}
+
+:root[data-context-menu-open] body {
+	pointer-events: none !important;
+}
+
+/* Distance sits bare on the photo — no plate — so it leans on a shadow rather
+   than a fill to stay legible over a bright image. */
+.profile-card-distance {
+	@apply text-distance leading-none font-medium text-plate-foreground;
+	text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
+}
+
+/* Push the whole toolbar (counter + buttons) below the notch/status bar so
+   nothing renders behind it. */
+.pswp .pswp__top-bar {
+	top: var(--safe-area-top, 0px);
+}
+
+/* Give every toolbar button the same legible pill so icons (download, zoom)
+   don't vanish against bright photos the way the bare glyphs do. */
+.pswp .pswp__button--close,
+.pswp .pswp__button--zoom,
+.pswp .pswp__button--download-button {
+	@apply flex size-11 items-center justify-center rounded-full bg-black/65 opacity-100 backdrop-blur-md;
+	margin-top: 0.75rem;
+	@apply pointer-events-auto mr-2;
+}
+
+.pswp .pswp__button--close {
+	@apply mr-3;
+}
+
+.pswp .pswp__button--close:hover,
+.pswp .pswp__button--close:active,
+.pswp .pswp__button--close:focus-visible,
+.pswp .pswp__button--zoom:hover,
+.pswp .pswp__button--zoom:active,
+.pswp .pswp__button--zoom:focus-visible,
+.pswp .pswp__button--download-button:hover,
+.pswp .pswp__button--download-button:active,
+.pswp .pswp__button--download-button:focus-visible {
+	@apply bg-black/80 opacity-100;
+}
+
+.pswp .pswp__button--close .pswp__icn,
+.pswp .pswp__button--zoom .pswp__icn,
+.pswp .pswp__button--download-button .pswp__icn {
+	@apply top-1.5 left-1.5 size-8;
+}
+
+/* A viewer with the story chrome (see MediaViewerChrome.svelte) owns its own
+   frame: zoom, save and close live in its sender row, the bars are opaque and
+   the slide is padded clear of them, so the built-in toolbar would both draw a
+   second set of those buttons and land on top of the row. */
+.pswp--chrome .pswp__top-bar {
+	display: none;
+}
+
+/* Below the modal layer (dialogs are z-50), above the page's bars (~z-20).
+   PhotoSwipe's own 100000 buried any dialog opened from inside the viewer. */
+.pswp {
+	--pswp-root-z-index: 40;
+}
+
+/* The photo fills the screen, so the backdrop shows only where its aspect ratio
+   leaves room. `--pswp-bg` is PhotoSwipe's own hook for it, so this survives the
+   opacity animation. Doubled class: PhotoSwipe's own stylesheet arrives with the
+   lightbox chunk, so it lands after this file and would otherwise win the
+   default on equal specificity. */
+.pswp.pswp--chrome {
+	--pswp-bg: var(--viewer-surface);
+}
+
+/* MapLibre's own zoom controls ship on a white plate with dark glyphs, which
+   reads as a hole in a dark map. Repainted onto the app's surfaces here rather
+   than in the picker, since the markup is the library's. Doubled class: maplibre's stylesheet loads with the map chunk,
+   so it lands after this file. The glyphs are background SVGs with no color to
+   set, so dark mode inverts them. */
+.maplibregl-ctrl.maplibregl-ctrl-group {
+	@apply overflow-hidden rounded-lg border border-border bg-card shadow-md;
+}
+
+.maplibregl-ctrl-group button + button {
+	@apply border-t-border;
+}
+
+/* Smaller than MapLibre's 29px default: the zoom pair is a secondary control
+   next to the picker's own buttons, and the map is only drawer-sized. The icons
+   are 29px background SVGs, so they need sizing down with the button. */
+.maplibregl-ctrl-group button {
+	@apply size-6;
+}
+
+.maplibregl-ctrl-group .maplibregl-ctrl-icon {
+	background-size: 18px 18px;
+}
+
+.dark .maplibregl-ctrl-icon {
+	filter: invert(1);
+}
+
+@layer components {
+	.scrollbar-thin {
+		scrollbar-width: thin;
+	}
+
+	/* The doodle wallpaper behind a transcript. One asset for both themes: the
+	   art is a mask, so the ink is --foreground at a weight that stays under the
+	   bubbles. Positioned children paint over it, so the scroller on top of it
+	   needs to be one. */
+	.chat-wallpaper::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background-color: var(--foreground);
+		opacity: 0.055;
+		-webkit-mask-image: url("./lib/assets/chat-wallpaper.svg");
+		mask-image: url("./lib/assets/chat-wallpaper.svg");
+		-webkit-mask-size: 300px 300px;
+		mask-size: 300px 300px;
+		mask-repeat: repeat;
+	}
+
+	/* A media placeholder inside a transcript. The usual translucent tint would
+	   let the wallpaper's doodles show through the tile, so the same tint is
+	   mixed over the chat background instead. */
+	.chat-media-tint {
+		background-color: color-mix(
+			in oklab,
+			var(--card-foreground) 10%,
+			var(--chat-background)
+		);
+	}
+
+	.chat-media-tint-strong {
+		background-color: color-mix(
+			in oklab,
+			var(--card-foreground) 20%,
+			var(--chat-background)
+		);
+	}
+
+	/* Group heading above a list or card section — PINNED, ACCOUNT, ABOUT. */
+	.section-label {
+		@apply text-section leading-none font-semibold tracking-[0.16em] text-ink3 uppercase;
+	}
+
+	/* Screen title — Nearby, Inbox, Settings, and a profile name. */
+	.screen-title {
+		@apply text-screen-title leading-none font-semibold tracking-[-0.03em];
+	}
+
+	/* Title of a pushed detail screen — Edit album, Blocked users. Same family as
+	   a screen title, a step down in size because it sits beside a back arrow. */
+	.detail-title {
+		@apply text-detail leading-none font-semibold tracking-[-0.02em];
+	}
+
+	/* An album's own name, on its edit screen: the one thing on the screen that
+	   is a title rather than a label, so it sits above .detail-title. */
+	.album-name {
+		@apply text-album-name leading-none font-semibold tracking-[-0.02em];
+	}
+
+	/* A tile's label band: full tile width, flush to the bottom edge, with a tall
+	   top padding that is the gradient's ramp. The gradient is what carries the
+	   text over a bright photo — no plate, no blur, and the rest of the tile
+	   stays uncovered. */
+	.tile-scrim {
+		@apply pointer-events-none absolute inset-x-0 bottom-0 px-2.25 pt-6 pb-2 text-plate-foreground;
+
+		background: linear-gradient(transparent, var(--plate-scrim));
+	}
+
+	/* Two lines of label (a name over a note) need a slightly longer ramp. */
+	.tile-scrim-tall {
+		@apply pt-6.5;
+	}
+
+	/* An album cover's label: one short line, so a lighter ramp. */
+	.tile-scrim-soft {
+		@apply pointer-events-none absolute inset-x-0 bottom-0 px-2.25 pt-5 pb-2 text-plate-foreground;
+
+		background: linear-gradient(transparent, var(--plate-scrim-soft));
+	}
+
+	/* The grid for objects rather than faces — albums, an album's photos. Wider
+	   gutters and rounded corners than .photo-grid, and it keeps the screen's
+	   side padding instead of running edge to edge. Column counts follow the
+	   same @container/photo-grid thresholds. */
+	/* A grid whose tiles can be picked up and dropped elsewhere (drag-reorder.ts).
+	   The lifted tile rides above its neighbours and follows the finger with no
+	   transition; the cell it would land in is outlined, so the drop target is
+	   visible without the grid reflowing under the hand. */
+	.reorder-grid {
+		/* Without these, holding a photo pops WebKit's image callout and the
+		   selection magnifier, and the pointer is cancelled before the tile ever
+		   lifts — the drag looks like it simply does not work. */
+		[data-reorder-item] {
+			@apply transition-transform select-none [-webkit-touch-callout:none];
+
+			-webkit-user-drag: none;
+
+			& * {
+				@apply select-none [-webkit-touch-callout:none];
+
+				-webkit-user-drag: none;
+			}
+		}
+
+		[data-reorder-target] {
+			@apply outline-2 outline-offset-2 outline-primary;
+		}
+
+		[data-reorder-dragging] {
+			@apply relative z-10 scale-105 transition-none;
+			filter: drop-shadow(0 8px 20px rgb(0 0 0 / 0.35));
+		}
+	}
+
+	.object-grid {
+		@apply mx-auto grid w-full max-w-400 content-start gap-2;
+
+		/* Columns follow the same two ladders as .photo-grid — see the bands
+		   below — one rung narrower when the grid carries data-grid-columns="2".
+		   The attribute sits on the grid itself rather than the document, so a
+		   screen can feed each of its grids a different preference. */
+		&:not([data-grid-columns="2"]) {
+			@apply grid-cols-3 @grid4/photo-grid:grid-cols-4 @grid5/photo-grid:grid-cols-5 @grid6/photo-grid:grid-cols-6 @grid7/photo-grid:grid-cols-7;
+		}
+		&[data-grid-columns="2"] {
+			@apply grid-cols-2 @grid4/photo-grid:grid-cols-3 @grid5/photo-grid:grid-cols-4 @grid6/photo-grid:grid-cols-5 @grid7/photo-grid:grid-cols-6;
+		}
+
+		/* Three tiles across is half again as many covers on screen as the old
+		   two, so tiles that have scrolled out of view skip their paint and
+		   layout. The cells keep their size either way — every tile carries an
+		   aspect ratio and the grid gives it a definite width — so this changes
+		   nothing about where anything sits. Not on a reorder grid: a drag reads
+		   every tile's box, including the ones off screen. */
+		&:not(.reorder-grid) > * {
+			content-visibility: auto;
+		}
+	}
+
+	/* Requires an ancestor with @container/photo-grid — columns follow that
+	   container's width, not the viewport. Only cells may be direct children,
+	   because the corner rules below select on position. */
+	.photo-grid {
+		@apply mx-auto grid w-full max-w-400 flex-1 grid-cols-2 content-start gap-gutter overflow-clip rounded-grid;
+
+		--grid-radius-top: var(--radius-grid);
+		--grid-radius-bottom: var(--radius-grid);
+		--photo-grid-aspect: 1 / 1;
+
+		> :first-child {
+			border-top-left-radius: var(--grid-radius-top);
+		}
+		> :last-child {
+			border-bottom-right-radius: var(--grid-radius-bottom);
+		}
+	}
+
+	.photo-grid[data-rows-above] {
+		--grid-radius-top: 0px;
+	}
+	.photo-grid[data-rows-below] {
+		--grid-radius-bottom: 0px;
+	}
+
+	/* Column counts come in two ladders: the default one, and the rung-narrower
+	   one a grid opts into with data-grid-columns="2" (set from the Appearance >
+	   Grid preferences, one per kind of grid). Two across is the floor, so the
+	   narrowest band is the same either way. The corner rounding for each rung
+	   lives in the photo-cols-N utilities.
+	   e2e/photo-grid-corners.spec.ts asserts the resolved count and all four
+	   corners in every band of the default ladder. */
+	@container photo-grid (width < theme(--container-grid3)) {
+		.photo-grid {
+			@apply photo-cols-2;
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid3)) and (width < theme(--container-grid4)) {
+		.photo-grid:not([data-grid-columns="2"]) {
+			@apply photo-cols-3;
+		}
+		.photo-grid[data-grid-columns="2"] {
+			@apply photo-cols-2;
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid4)) and (width < theme(--container-grid5)) {
+		.photo-grid:not([data-grid-columns="2"]) {
+			@apply photo-cols-4;
+		}
+		.photo-grid[data-grid-columns="2"] {
+			@apply photo-cols-3;
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid5)) and (width < theme(--container-grid6)) {
+		.photo-grid:not([data-grid-columns="2"]) {
+			@apply photo-cols-5;
+		}
+		.photo-grid[data-grid-columns="2"] {
+			@apply photo-cols-4;
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid6)) and (width < theme(--container-grid7)) {
+		.photo-grid:not([data-grid-columns="2"]) {
+			@apply photo-cols-6;
+		}
+		.photo-grid[data-grid-columns="2"] {
+			@apply photo-cols-5;
+		}
+	}
+	@container photo-grid (width >= theme(--container-grid7)) {
+		.photo-grid:not([data-grid-columns="2"]) {
+			@apply photo-cols-7;
+		}
+		.photo-grid[data-grid-columns="2"] {
+			@apply photo-cols-6;
+		}
+	}
+}
+
+/* One rung of the .photo-grid column ladder: N columns, with the four outer
+   cells of the block rounded — first, last, the end of the first row and the
+   start of the last. Which rung a band uses depends on the Grid preference, so
+   every count from 2 to 7 is spelled out here and picked in layout above. */
+@utility photo-cols-2 {
+	@apply grid-cols-2;
+
+	> :nth-child(2),
+	> :last-child:nth-child(-n + 2) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(2n + 1):nth-last-child(-n + 2) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+@utility photo-cols-3 {
+	@apply grid-cols-3;
+
+	> :nth-child(3),
+	> :last-child:nth-child(-n + 3) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(3n + 1):nth-last-child(-n + 3) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+@utility photo-cols-4 {
+	@apply grid-cols-4;
+
+	> :nth-child(4),
+	> :last-child:nth-child(-n + 4) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(4n + 1):nth-last-child(-n + 4) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+@utility photo-cols-5 {
+	@apply grid-cols-5;
+
+	> :nth-child(5),
+	> :last-child:nth-child(-n + 5) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(5n + 1):nth-last-child(-n + 5) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+@utility photo-cols-6 {
+	@apply grid-cols-6;
+
+	> :nth-child(6),
+	> :last-child:nth-child(-n + 6) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(6n + 1):nth-last-child(-n + 6) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+@utility photo-cols-7 {
+	@apply grid-cols-7;
+
+	> :nth-child(7),
+	> :last-child:nth-child(-n + 7) {
+		border-top-right-radius: var(--grid-radius-top);
+	}
+	> :nth-child(7n + 1):nth-last-child(-n + 7) {
+		border-bottom-left-radius: var(--grid-radius-bottom);
+	}
+}
+
+/* Safe-area / inset layout vocabulary — see --nav-height / --screen-* tokens above */
+:root {
+	--nav-clear: calc(0.75rem + var(--nav-height) + var(--bar-content-gap));
+}
+@utility h-screen-safe {
+	height: var(--screen-safe);
+}
+@utility max-h-screen-safe {
+	max-height: var(--screen-safe);
+}
+@utility pt-fixed-header {
+	padding-top: calc(1rem + var(--safe-area-top));
+}
+@utility pb-fixed-nav {
+	padding-bottom: calc(0.5rem + var(--safe-area-bottom));
+}
+@utility pb-nav-clear {
+	padding-bottom: calc(0.5rem + var(--content-pb) + var(--bar-content-gap));
+}
+@utility pt-header-clear-* {
+	padding-top: calc(--spacing(--value(integer)) + var(--bar-content-gap));
+}
+@utility bottom-nav-clear {
+	bottom: calc(var(--nav-clear) + var(--safe-area-bottom));
+}
+@utility max-h-photo {
+	max-height: min(70vh, 500px);
+}
+
+/* 1px past full height keeps a scroll container technically scrollable, so
+   a native rubber band (and with it pull-to-refresh) works on short content */
+@utility min-h-overscrollable {
+	min-height: calc(
+		100% + 1px - var(--refresh-inset-top, 0px) -
+			var(--refresh-inset-bottom, 0px)
+	);
+	margin-top: var(--refresh-inset-top, 0px);
+	margin-bottom: var(--refresh-inset-bottom, 0px);
+}
+
+@utility screen-nav-host {
+	/* Scroller child needs pull-scroller */
+	/* Content inside needs pb-nav-clear */
+	@apply relative h-(--screen-nav) w-full;
+	margin-bottom: calc(var(--content-pb) * -1);
+}
+
+/* Pull-to-refresh containers */
+@utility pull-scroller {
+	/* Contained vertically only: a sideways drag carries on to the pager the
+	   screen sits in. */
+	@apply size-full overflow-x-hidden overflow-y-auto overscroll-y-contain;
+}
+
+[data-offscreen-skip] {
+	content-visibility: auto;
+	contain-intrinsic-block-size: auto var(--offscreen-block-size);
+}
+
+[data-covered] {
+	content-visibility: hidden;
+}
+
+@supports not (content-visibility: hidden) {
+	[data-covered] {
+		visibility: hidden;
+	}
+}
+
+[data-sonner-toaster] {
+	font-family: var(--font-sans) !important;
+	z-index: var(--z-index-toast) !important;
+	/* bits-ui modal dialogs set body { pointer-events: none }; toasts must stay tappable */
+	pointer-events: auto;
+}
+
+[data-sonner-toaster][data-y-position="bottom"] {
+	transition:
+		transform 400ms ease,
+		bottom 300ms ease-out;
+}
+
+[data-sonner-toaster][data-y-position="bottom"][data-sheet-anchored] {
+	bottom: min(
+		max(var(--offset-bottom), var(--sheet-anchor, 0px)),
+		calc(
+			100dvh - var(--safe-area-top) - 0.5rem -
+				var(--toast-stack-height, 0px)
+		)
+	);
+	transition: transform 400ms ease;
+}
+
+:where([data-reduce-motion]) [data-sonner-toaster][data-y-position="bottom"] {
+	transition: none;
+}
+
+.toast[data-styled="true"] {
+	background-color: var(--color-accent) !important;
+	color: var(--popover) !important;
+	border-radius: 1.25rem !important;
+	border: 1px solid var(--color-border) !important;
+}
+
+/* A toast that pops up under a finger lets that tap through to the screen. */
+.toast[data-sonner-toast]:not([data-swipe-out="true"]) {
+	animation: toast-arm 400ms step-end;
+}
+
+@keyframes toast-arm {
+	from {
+		pointer-events: none;
+	}
+}
+
+/* The bubble is a small centered pill, but sonner's row spans the full width —
+   and carries an invisible hit strip above it while the toaster is expanded — so
+   it swallows every tap and scroll in that band for as long as it is up. Only
+   the pill itself should take input; the rest of the row is click-through. */
+.profile-view-toast[data-sonner-toast] {
+	pointer-events: none;
+}
+
+.profile-view-toast[data-sonner-toast] > * {
+	pointer-events: auto;
+}
+
+.toast[data-styled="true"] [data-close-button] {
+	background-color: var(--color-accent) !important;
+	color: var(--popover) !important;
+	border-color: var(--color-border) !important;
+}
+
+.toast[data-styled="true"] [data-close-button]:hover {
+	background-color: var(--popover) !important;
+	color: var(--color-accent) !important;
+}
+
+:root:not([data-hover-pointer]) .toast [data-close-button] {
+	display: none;
+}
+
+.incoming-message-toast[data-sonner-toast] {
+	opacity: 1 !important;
+	--fly-out: translateY(calc(-100% - var(--offset-top, 24px) - 12px));
+}
+
+@media not (max-width: 600px) {
+	[data-sonner-toast][data-styled="false"] {
+		width: var(--width);
+	}
+}
+
+.incoming-message-toast[data-sonner-toast][data-mounted="false"] {
+	--y: var(--fly-out) !important;
+}
+
+.incoming-message-toast[data-sonner-toast][data-removed="true"] {
+	--y: var(--fly-out) !important;
+	transition: transform 180ms ease-in !important;
+}
+
+.incoming-message-toast[data-sonner-toast][data-swipe-out="true"][data-swipe-direction="up"] {
+	animation-name: incoming-message-toast-swipe-out-up !important;
+}
+
+@keyframes incoming-message-toast-swipe-out-up {
+	from {
+		transform: var(--y) translateY(var(--swipe-amount-y));
+	}
+
+	to {
+		transform: var(--fly-out);
+	}
+}
+
+:where([data-reduce-motion]) {
+	.incoming-message-toast[data-sonner-toast] {
+		--fly-out: translateY(0);
+		transition: opacity 180ms ease-out !important;
+	}
+
+	.incoming-message-toast[data-sonner-toast][data-mounted="false"],
+	.incoming-message-toast[data-sonner-toast][data-removed="true"] {
+		opacity: 0 !important;
+		transition: opacity 180ms ease-in !important;
+	}
+
+	.incoming-message-toast[data-sonner-toast][data-swipe-out="true"][data-swipe-direction="up"] {
+		animation: none !important;
+	}
+
+	[class*="animate-in"],
+	[class*="animate-out"] {
+		--tw-enter-translate-x: 0;
+		--tw-enter-translate-y: 0;
+		--tw-enter-scale: 1;
+		--tw-enter-rotate: 0;
+		--tw-exit-translate-x: 0;
+		--tw-exit-translate-y: 0;
+		--tw-exit-scale: 1;
+		--tw-exit-rotate: 0;
+	}
+
+	[data-vaul-drawer] {
+		transition-duration: 0s !important;
+	}
+
+	[data-vaul-drawer][data-vaul-snap-points="false"]:not(
+			[data-vaul-animate="false"]
+		) {
+		animation-name: reduced-motion-fade-in !important;
+	}
+
+	[data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"]:not(
+			[data-vaul-animate="false"]
+		) {
+		animation-name: reduced-motion-fade-out !important;
+	}
+}
+
+@keyframes reduced-motion-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes reduced-motion-fade-out {
+	to {
+		opacity: 0;
+	}
+}
+
+@theme {
+	--apple-system-glass-material-normal: -apple-system-glass-material;
+	--apple-system-glass-material-clear: -apple-system-glass-material-clear;
+	--apple-system-glass-material-subdued: -apple-system-glass-material-subdued;
+	--apple-system-glass-material-media-controls: -apple-system-glass-material-media-controls;
+	--apple-system-glass-material-media-controls-subdued: -apple-system-glass-material-media-controls-subdued;
+}
+
+@utility glass-* {
+	-apple-visual-effect: --value(--apple-system-glass-material-*);
+}
+
+@utility scrim {
+	background-image: var(--scrim);
+}
+
+@utility media-chip {
+	@apply rounded-full border border-white/10 bg-popover/40 scrim;
+}
+
+@utility media-pill {
+	@apply bg-popover/20 scrim;
+}
+
+@utility media-disc {
+	@apply size-11 rounded-full bg-black/55 scrim text-white backdrop-filter-(--bd-veil) transition-colors;
+
+	@variant hover {
+		@apply bg-black/75;
+	}
+}
+
+/* Backdrop blur: one token map per mode, keyed by data-backdrop-blur on <html>. */
+:root {
+	/* The capsule's own tint: transparent while the system material is the
+	   surface, opaque once blur is off and nothing else draws one. */
+	--glass-capsule-bg: transparent;
+	--glass-capsule-fallback-bg: color-mix(
+		in srgb,
+		var(--background) 72%,
+		transparent
+	);
+	--bar-content-gap: 0px;
+	--bd-lens: blur(1px);
+	--bd-veil: blur(8px);
+	--bd-rail: blur(16px);
+	--bd-panel: blur(24px);
+	--bd-chip: blur(40px);
+	--pill-frost: url(#frost-pill-40);
+	--chip-frost: url(#frost-tile-6) url(#frost-round-40);
+	--veil-frost: url(#frost-tile-1) url(#frost-round-8);
+	--glass-controls-bg: rgba(0, 0, 0, 0.4);
+	--glass-controls-subdued-bg: rgba(0, 0, 0, 0.2);
+	--scrim: none;
+}
+
+:root[data-backdrop-blur="min"] {
+	--bd-rail: blur(12px);
+	--bd-panel: blur(16px);
+	--bd-chip: blur(24px);
+	--pill-frost: url(#frost-pill-24);
+	--chip-frost: url(#frost-tile-6) url(#frost-round-24);
+	--bar-content-gap: 0.75rem;
+}
+
+:root[data-backdrop-blur="off"] {
+	--bd-lens: none;
+	--bd-veil: none;
+	--bd-rail: none;
+	--bd-panel: none;
+	--bd-chip: none;
+	--apple-system-glass-material-normal: none;
+	--apple-system-glass-material-clear: none;
+	--apple-system-glass-material-subdued: none;
+	--apple-system-glass-material-media-controls: none;
+	--apple-system-glass-material-media-controls-subdued: none;
+	--glass-capsule-bg: var(--background);
+	--glass-capsule-fallback-bg: var(--background);
+	--glass-controls-bg: rgba(0, 0, 0, 0.62);
+	--glass-controls-subdued-bg: rgba(0, 0, 0, 0.42);
+	--scrim: linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45));
+}
+
+.pblur[data-pblur-direction="bottomToTop"] {
+	--pblur-dir: to bottom;
+}
+
+.pblur[data-pblur-direction="topToBottom"] {
+	--pblur-dir: to top;
+}
+
+.pblur-layer,
+.pblur-scrim {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.pblur-scrim {
+	display: none;
+	z-index: 10;
+}
+
+.pblur-layer {
+	display: block;
+	backdrop-filter: var(--pblur-blur);
+	-webkit-mask-image: linear-gradient(var(--pblur-dir), var(--pblur-stops));
+	mask-image: linear-gradient(var(--pblur-dir), var(--pblur-stops));
+}
+
+/* WebKit draws these wrong inside the tab shell's track while it slides (what
+   sits in front comes out blurred), so they wait for it to rest. */
+[data-tab-shell-moving] .pblur-layer {
+	backdrop-filter: none;
+}
+
+.pblur-layer[data-pblur-layer="0"] {
+	--pblur-blur: blur(1px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 1) 10%, rgba(0, 0, 0, 1) 30%,
+		rgba(0, 0, 0, 0) 40%;
+}
+.pblur-layer[data-pblur-layer="1"] {
+	--pblur-blur: blur(2px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 10%, rgba(0, 0, 0, 1) 20%, rgba(0, 0, 0, 1) 40%,
+		rgba(0, 0, 0, 0) 50%;
+}
+.pblur-layer[data-pblur-layer="2"] {
+	--pblur-blur: blur(4px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 15%, rgba(0, 0, 0, 1) 30%, rgba(0, 0, 0, 1) 50%,
+		rgba(0, 0, 0, 0) 60%;
+}
+.pblur-layer[data-pblur-layer="3"] {
+	--pblur-blur: blur(8px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 1) 60%,
+		rgba(0, 0, 0, 0) 70%;
+}
+.pblur-layer[data-pblur-layer="4"] {
+	--pblur-blur: blur(12px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 1) 50%, rgba(0, 0, 0, 1) 70%,
+		rgba(0, 0, 0, 0) 80%;
+}
+.pblur-layer[data-pblur-layer="5"] {
+	--pblur-blur: blur(16px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 1) 80%,
+		rgba(0, 0, 0, 0) 90%;
+}
+.pblur-layer[data-pblur-layer="6"] {
+	--pblur-blur: blur(24px);
+	--pblur-stops:
+		rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 1) 70%, rgba(0, 0, 0, 1) 90%,
+		rgba(0, 0, 0, 0) 100%;
+}
+.pblur-layer[data-pblur-layer="7"] {
+	--pblur-blur: blur(32px);
+	--pblur-stops: rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 1) 80%;
+}
+.pblur-layer[data-pblur-layer="8"] {
+	--pblur-blur: blur(64px);
+	--pblur-stops: rgba(0, 0, 0, 0) 70%, rgba(0, 0, 0, 1) 100%;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="medium"] .pblur-layer {
+	display: none;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="0"] {
+	display: block;
+	--pblur-blur: blur(1px);
+	--pblur-stops: rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 1) 10%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="1"] {
+	display: block;
+	--pblur-blur: blur(4px);
+	--pblur-stops: rgba(0, 0, 0, 0) 10%, rgba(0, 0, 0, 1) 25%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="2"] {
+	display: block;
+	--pblur-blur: blur(10px);
+	--pblur-stops: rgba(0, 0, 0, 0) 20%, rgba(0, 0, 0, 1) 40%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="3"] {
+	display: block;
+	--pblur-blur: blur(28px);
+	--pblur-stops: rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 1) 65%;
+}
+:root[data-backdrop-blur="medium"] .pblur-layer[data-pblur-layer="4"] {
+	display: block;
+	--pblur-blur: blur(64px);
+	--pblur-stops: rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 1) 100%;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="min"] .pblur-layer {
+	display: none;
+}
+:root[data-backdrop-blur="min"] .pblur-layer[data-pblur-layer="0"] {
+	display: block;
+	--pblur-blur: blur(32px);
+	--pblur-overhang: 4rem;
+	pointer-events: none;
+	z-index: 10;
+}
+
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="bottomToTop"]
+	.pblur-layer[data-pblur-layer="0"] {
+	top: calc(-1 * var(--pblur-overhang));
+	height: calc(100% + var(--pblur-overhang));
+	-webkit-mask-image: linear-gradient(
+		to bottom,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+	mask-image: linear-gradient(
+		to bottom,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="topToBottom"]
+	.pblur-layer[data-pblur-layer="0"] {
+	height: calc(100% + var(--pblur-overhang));
+	-webkit-mask-image: linear-gradient(
+		to top,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+	mask-image: linear-gradient(
+		to top,
+		transparent var(--pblur-overhang),
+		black var(--pblur-overhang)
+	);
+}
+:root[data-backdrop-blur="min"] .pblur-bg {
+	background-image: none;
+}
+:root[data-backdrop-blur="min"] .pblur-scrim {
+	display: block;
+	background-color: rgba(0, 0, 0, 0.55);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="bottomToTop"]
+	.pblur-scrim {
+	border-top: 1px solid var(--border);
+}
+:root[data-backdrop-blur="min"]
+	.pblur[data-pblur-direction="topToBottom"]
+	.pblur-scrim {
+	border-bottom: 1px solid var(--border);
+}
+
+:root[data-backdrop-blur="off"] .pblur-layer {
+	display: none;
+}
+/* Nothing is blurred, so there is nothing for the band to fade into: it stops
+   pretending to be a gradient and becomes one flat surface with a hairline,
+   the way the docked tab bar does. --pblur-flat lets a bar that sits on a
+   different surface name its own colour. */
+:root[data-backdrop-blur="off"] .pblur-bg {
+	background-image: none;
+	background-color: var(--pblur-flat, var(--background));
+}
+/* On the bg, not the scrim: the opaque fill covers the scrim entirely. */
+:root[data-backdrop-blur="off"]
+	.pblur[data-pblur-direction="bottomToTop"]
+	.pblur-bg {
+	border-top: 1px solid var(--border);
+}
+:root[data-backdrop-blur="off"]
+	.pblur[data-pblur-direction="topToBottom"]
+	.pblur-bg {
+	border-bottom: 1px solid var(--border);
+}
+:root[data-backdrop-blur="off"] .frost {
+	display: none;
+}
+
+.menu-scrim::backdrop {
+	background-color: transparent;
+	backdrop-filter: blur(24px);
+}
+:root[data-backdrop-blur="min"] .menu-scrim::backdrop {
+	backdrop-filter: blur(16px);
+}
+:root[data-backdrop-blur="off"] .menu-scrim::backdrop {
+	background-color: rgba(0, 0, 0, 0.62);
+	backdrop-filter: none;
+}
+
+@supports not (-apple-visual-effect: -apple-system-glass-material) {
+	.glass-clear {
+		backdrop-filter: var(--bd-lens);
+		border: 0.5px solid rgba(255, 255, 255, 0.75);
+		box-shadow:
+			inset 0 0 0px rgba(255, 255, 255, 0.2),
+			inset 4px 0 5px 2px rgba(255, 255, 255, 0.8),
+			inset -3px 0 5px 0px rgba(255, 255, 255, 0.6);
+	}
+	.glass-media-controls {
+		backdrop-filter: var(--bd-veil);
+		background-color: var(--glass-controls-bg);
+	}
+	.glass-media-controls-subdued {
+		backdrop-filter: var(--bd-panel);
+		background-color: var(--glass-controls-subdued-bg);
+		box-shadow:
+			inset 3px 1px 5px rgba(255, 255, 255, 0.05),
+			inset 2px -1px 3px rgba(255, 255, 255, 0.2),
+			inset 1px 1px 5px rgba(0, 0, 0, 0.2);
+	}
+}
+
+/* The floating tab bar's material. Two bars wear it — the main nav capsule
+   (NavBar.svelte) and the share sheet's tab bar (ComposerAttachmentsMenu.svelte)
+   — so it lives here rather than in either of them. Pair it with `glass-normal`
+   in the markup: the material carries its own edge, but not the separation from
+   the content it floats over — that is this shadow's job. Declared through
+   Tailwind rather than as a bare box-shadow so it composes with the ring the
+   fallback below adds: ring-* writes the whole box-shadow property out of its
+   own variables, and a hand-written one next to it is simply overwritten. */
+.glass-capsule {
+	@apply shadow-[0_8px_28px_rgb(0_0_0/0.28),0_1px_2px_rgb(0_0_0/0.16)];
+	background-color: var(--glass-capsule-bg);
+}
+
+/* With blur off the material is gone, so the bar has to draw its own edge as
+   well as its own fill. */
+:root[data-backdrop-blur="off"] .glass-capsule {
+	@apply ring-1 ring-border/60;
+}
+
+/* Same reason: the scrubber thumb drops its fill mid-drag and lets the clear
+   material stand in for it, which off leaves as nothing at all. */
+:root[data-backdrop-blur="off"] [data-slot="scrubber-thumb"] {
+	@apply bg-white;
+}
+
+/* Everywhere but iOS this is the surface, not a stopgap, so it is built rather
+   than inherited: glass-normal's fallback is a bare 6px blur, which leaves the
+   labels sitting on whatever happens to be behind them. A wider blur, the
+   saturation the system material adds back to what it blurs, a tint for contrast
+   and a hairline for the edge. */
+@supports not (-apple-visual-effect: -apple-system-glass-material) {
+	.glass-capsule {
+		@apply ring-1 ring-border/60;
+		background-color: var(--glass-capsule-fallback-bg);
+		backdrop-filter: var(--bd-rail) saturate(1.8);
+	}
+}
+
+/* A blur is the one part with no substitute: without it the tint alone is a flat
+   panel, so it leans opaque instead of pretending to be glass. */
+@supports not (
+	(backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+	.glass-capsule {
+		@apply bg-background/95;
+	}
+}
+
+@supports not (
+	(-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+) {
+	:root:root {
+		--bd-lens: none;
+		--bd-veil: none;
+		--bd-rail: none;
+		--bd-panel: none;
+		--bd-chip: none;
+		--glass-controls-bg: rgba(0, 0, 0, 0.62);
+		--glass-controls-subdued-bg: rgba(0, 0, 0, 0.42);
+		--scrim: linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45));
+	}
+	:root:root .pblur-layer,
+	:root:root .frost {
+		display: none;
+	}
+	:root:root .pblur-bg {
+		background-image: none;
+		background-color: var(--pblur-flat, var(--background));
+	}
+	:root:root .pblur[data-pblur-direction="bottomToTop"] .pblur-bg {
+		border-top: 1px solid var(--border);
+	}
+	:root:root .pblur[data-pblur-direction="topToBottom"] .pblur-bg {
+		border-bottom: 1px solid var(--border);
+	}
+	:root:root .menu-scrim::backdrop {
+		background-color: rgba(0, 0, 0, 0.62);
+	}
+}

@@ -1,0 +1,392 @@
+<script lang="ts">
+	import ArrowBendUpLeftIcon from "phosphor-svelte/lib/ArrowBendUpLeftIcon";
+	import { untrack } from "svelte";
+	import { expoOut } from "svelte/easing";
+	import { scale } from "svelte/transition";
+
+	import { hapticImpact } from "#lib/platform/haptics.ts";
+	import { longPressHandlers } from "#lib/util/long-press.ts";
+	import { observeIntersection } from "#lib/util/observe-intersection.ts";
+	import { SwipeToReply } from "#lib/util/swipe-to-reply.svelte.ts";
+	import type { ApiResponseMessage } from "#lib/model/messaging/messages.ts";
+	import AlbumContentMessage from "./AlbumContentMessage.svelte";
+	import AlbumMessage from "./AlbumMessage.svelte";
+	import AudioMessage from "./AudioMessage.svelte";
+	import { setMessageContext } from "./context";
+	import ExpiringImageMessage from "./ExpiringImageMessage.svelte";
+	import GaymojiMessage from "./GaymojiMessage.svelte";
+	import GiphyMessage from "./GiphyMessage.svelte";
+	import ImageMessage from "./ImageMessage.svelte";
+	import LocationMessage from "./LocationMessage.svelte";
+	import MessageContextMenu from "./MessageContextMenu.svelte";
+	import MessageDateGroup from "./MessageDateGroup.svelte";
+	import MessageTime from "./MessageTime.svelte";
+	import MessageWrapper from "./MessageWrapper.svelte";
+	import ProfilePhotoReplyMessage from "./ProfilePhotoReplyMessage.svelte";
+	import Reaction from "./Reaction.svelte";
+	import TextMessage from "./TextMessage.svelte";
+	import UnsentMessage from "./UnsentMessage.svelte";
+	import UnsupportedMessage from "./UnsupportedMessage.svelte";
+	import VideoCallMessage from "./VideoCallMessage.svelte";
+	import VideoMessage from "./VideoMessage.svelte";
+
+	let {
+		message,
+		isOut,
+		isRead,
+		indexInStack,
+		stackLength,
+		dayStart,
+		status,
+		onReact,
+		onDelete,
+		onVisible,
+		onUnsend,
+		onUnshareAlbum,
+		onReply,
+		onCopyError,
+		nextAudioMessageId,
+		onReport,
+	}: {
+		message: ApiResponseMessage;
+		isOut: boolean;
+		isRead: boolean | null;
+		indexInStack: number;
+		stackLength: number;
+		dayStart?: number;
+		status?: "sent" | "pending" | "error";
+		onReact?: (reactionId: number) => void;
+		onDelete?: () => void;
+		onVisible?: () => void;
+		onUnsend?: () => void;
+		onUnshareAlbum?: () => void;
+		onReply?: () => void;
+		onCopyError?: () => void;
+		// Only voice notes use it: the id of the message right below this one,
+		// when that one is a voice note too.
+		nextAudioMessageId?: string;
+		onReport?: () => void;
+	} = $props();
+
+	const swipe = untrack(() =>
+		onReply
+			? new SwipeToReply(isOut ? "left" : "right", () => onReply?.())
+			: null,
+	);
+
+	const firstInStack = $derived(indexInStack === 0);
+	const lastInStack = $derived(indexInStack === stackLength - 1);
+
+	setMessageContext(() => ({
+		firstInStack,
+		lastInStack,
+		indexInStack,
+		isOut,
+		timestamp: message.timestamp,
+	}));
+
+	let contextMenuOpen = $state(false);
+	let messageElement: HTMLElement | null = $state(null);
+	const bubbleCenterY = $derived.by(() => {
+		const el = messageElement;
+		return el ? el.offsetTop + el.offsetHeight / 2 : null;
+	});
+
+	function setRef(el: HTMLElement | null) {
+		messageElement = el ?? null;
+	}
+	let inheritedStyles = $state("");
+
+	const INHERITED_PROPS = [
+		"font-size",
+		"font-family",
+		"font-weight",
+		"font-style",
+		"font-variant",
+		"font-stretch",
+		"line-height",
+		"letter-spacing",
+		"word-spacing",
+		"text-transform",
+		"text-indent",
+		"text-align",
+		"text-decoration",
+		"color",
+		"direction",
+		"white-space",
+		"word-break",
+		"overflow-wrap",
+		"tab-size",
+		"hyphens",
+		"cursor",
+		"border-collapse",
+		"border-spacing",
+		"list-style",
+		"list-style-type",
+		"quotes",
+	];
+
+	// A message still sending has nothing to offer yet.
+	const hasMenuActions = $derived(
+		message.type === "Text" ||
+			[
+				onReply,
+				onDelete,
+				onUnsend,
+				onUnshareAlbum,
+				onCopyError,
+				onReport,
+			].some((action) => action !== undefined),
+	);
+
+	$effect(() => {
+		if (!hasMenuActions) contextMenuOpen = false;
+	});
+
+	function onContextMenu() {
+		if (!messageElement || !hasMenuActions) return;
+		const computed = getComputedStyle(messageElement);
+		inheritedStyles = INHERITED_PROPS.map(
+			(prop) => `${prop}: ${computed.getPropertyValue(prop)}`,
+		).join("; ");
+		contextMenuOpen = true;
+	}
+
+	// iOS WebKit never fires `contextmenu` on a touch long-press, so the native
+	// oncontextmenu handler alone leaves the menu unreachable on iOS. These
+	// pointer-based handlers synthesize the long-press (and still forward a real
+	// right-click via their own oncontextmenu).
+	function reactOnDoubleTap() {
+		const selection = window.getSelection();
+		if (
+			selection &&
+			!selection.isCollapsed &&
+			messageElement?.contains(selection.anchorNode)
+		)
+			return;
+		if (!isOut && onReact) {
+			hapticImpact("medium");
+			onReact(1);
+			selection?.removeAllRanges();
+		}
+	}
+
+	// Media messages open a lightbox on tap, which would cover the bubble before
+	// the second tap of a double-tap ever reaches it, so their tap action is held
+	// back until the double-tap window has passed. Text bubbles have no tap
+	// action, so they keep responding instantly.
+	const OPENS_ON_TAP = [
+		"Image",
+		"ExpiringImage",
+		"Album",
+		"ExpiringAlbum",
+		"ExpiringAlbumV2",
+		"AlbumContentReply",
+		"AlbumContentReaction",
+		"Location",
+	];
+	const deferTapAction = untrack(
+		() =>
+			!isOut &&
+			onReact !== undefined &&
+			OPENS_ON_TAP.includes(message.type),
+	);
+
+	// iOS WebKit fires neither `contextmenu` (handled by the long-press synthesis)
+	// nor `dblclick` on touch, so the double-tap-to-react is synthesized here too.
+	const longPress = longPressHandlers(onContextMenu, reactOnDoubleTap, {
+		deferTapAction,
+	});
+</script>
+
+{#snippet adornments()}
+	<div
+		class={[
+			"absolute top-0 z-5 -translate-y-1/2",
+			{
+				"right-0 translate-x-1/2": !isOut,
+				"left-0 -translate-x-1/2": isOut,
+			},
+		]}
+	>
+		{#if message.reactions.length > 0}
+			{@const reactionMap = message.reactions.reduce(
+				(m, r) =>
+					m.set(r.reactionType, (m.get(r.reactionType) ?? 0) + 1),
+				new Map<number, number>(),
+			)}
+			<div
+				class="mt-1 mr-1 flex items-center gap-0.5"
+				transition:scale={{ duration: 150, easing: expoOut }}
+			>
+				{#each reactionMap.entries() as [type] (type)}
+					<Reaction type={Number(type)} />
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet content(clone?: boolean)}
+	<MessageWrapper {clone} {setRef} {adornments}>
+		{#if message.type === "Text"}
+			<TextMessage
+				message={message.body}
+				replyTo={message.replyToMessage}
+			/>
+		{:else if message.type === "Image"}
+			<ImageMessage
+				message={message.body}
+				messageId={message.messageId}
+			/>
+		{:else if message.type === "ExpiringImage"}
+			<ExpiringImageMessage
+				message={message.body}
+				conversationId={message.conversationId}
+				messageId={message.messageId}
+			/>
+		{:else if message.type === "Album" || message.type === "ExpiringAlbum" || message.type === "ExpiringAlbumV2"}
+			<AlbumMessage message={message.body} />
+		{:else if message.type === "Video" || message.type === "PrivateVideo" || message.type === "NonExpiringVideo"}
+			<VideoMessage
+				message={message.body}
+				conversationId={message.conversationId}
+				messageId={message.messageId}
+			/>
+		{:else if message.type === "Audio"}
+			<AudioMessage
+				message={message.body}
+				conversationId={message.conversationId}
+				messageId={message.messageId}
+				{nextAudioMessageId}
+			/>
+		{:else if message.type === "Location"}
+			<LocationMessage message={message.body} />
+		{:else if message.type === "AlbumContentReply" || message.type === "AlbumContentReaction"}
+			<AlbumContentMessage message={message.body} />
+		{:else if message.type === "ProfilePhotoReply"}
+			<ProfilePhotoReplyMessage message={message.body} />
+		{:else if message.type === "VideoCall"}
+			<VideoCallMessage {message} />
+		{:else if message.type === "Gaymoji"}
+			<GaymojiMessage message={message.body} />
+		{:else if message.type === "Giphy"}
+			<GiphyMessage message={message.body} />
+		{:else if message.type === "Unsent"}
+			<UnsentMessage />
+		{:else}
+			<UnsupportedMessage
+				type={"unrecognizedType" in message &&
+				typeof message.unrecognizedType === "string"
+					? message.unrecognizedType
+					: message.type}
+			/>
+		{/if}
+	</MessageWrapper>
+{/snippet}
+
+<div class={["relative z-1 flex flex-col gap-0.5", { "mt-3": firstInStack }]}>
+	{#if firstInStack && dayStart !== undefined}
+		<MessageDateGroup {dayStart} />
+	{/if}
+
+	<div
+		class="relative"
+		{...swipe?.handlers}
+		onpointercancel={() => swipe?.cancel()}
+	>
+		{#if swipe}
+			<div
+				class={[
+					"pointer-events-none absolute flex size-8 items-center justify-center rounded-full bg-muted text-muted-foreground",
+					{ "right-0": isOut, "left-0": !isOut },
+				]}
+				style:top={bubbleCenterY !== null
+					? `${bubbleCenterY}px`
+					: "50%"}
+				style:opacity={swipe.progress}
+				style:transform={`translateY(-50%) scale(${swipe.armed ? 1 : 0.6 + swipe.progress * 0.4})`}
+			>
+				<ArrowBendUpLeftIcon size={16} />
+			</div>
+		{/if}
+		<div
+			class={[
+				// Flex rather than floats: a float whose content has a wider
+				// min-content size (a long URL, a nowrap quoted line) overflows the
+				// row and gives the whole list a horizontal scrollbar. A flex item
+				// with `min-w-0` shrinks to the row instead.
+				"flex [-webkit-touch-callout:none] *:min-w-0 **:[-webkit-touch-callout:none]",
+				{ "justify-start pe-3": !isOut, "justify-end ps-3": isOut },
+			]}
+			role="button"
+			tabindex="0"
+			aria-label="Message"
+			data-message-id={message.messageId}
+			{...longPress}
+			ondblclick={(event) => {
+				// Mouse double-click; touch double-tap is synthesized in longPress.
+				if (!isOut && onReact) event.preventDefault();
+				reactOnDoubleTap();
+			}}
+			onkeydown={(event) => {
+				if (event.key === "Enter" || event.key === " ") {
+					if (event.key === " ") event.preventDefault();
+					onContextMenu();
+				}
+			}}
+			style:visibility={contextMenuOpen ? "hidden" : undefined}
+			style:transform={swipe?.deltaX
+				? `translateX(${swipe.deltaX}px)`
+				: undefined}
+			use:observeIntersection={{ handle: onVisible, once: true }}
+		>
+			{@render content()}
+		</div>
+	</div>
+	{#if lastInStack}
+		<span
+			class={[
+				"mt-1.75 text-distance leading-none text-ink3",
+				{ "text-right": isOut },
+			]}
+		>
+			{#if status === "pending"}
+				Sending...
+			{:else if status === "error"}
+				<span class="text-destructive"> Failed to send </span>
+			{:else}
+				{#if isRead !== null}
+					{#if isRead}
+						Read
+					{:else}
+						Sent
+					{/if}
+				{/if}
+				<MessageTime />
+			{/if}
+		</span>
+	{/if}
+</div>
+
+{#if contextMenuOpen && messageElement}
+	<MessageContextMenu
+		anchor={messageElement}
+		{content}
+		{isOut}
+		selectable={message.type === "Text"}
+		onClose={() => (contextMenuOpen = false)}
+		style={inheritedStyles}
+		textContent={message.type === "Text" ? message.body.text : undefined}
+		reactionAvailable={message.reactions.length === 0 &&
+			!isOut &&
+			!message.unsent}
+		{onDelete}
+		{onUnsend}
+		{onUnshareAlbum}
+		{onReply}
+		{onCopyError}
+		{onReport}
+		{onReact}
+	/>
+{/if}

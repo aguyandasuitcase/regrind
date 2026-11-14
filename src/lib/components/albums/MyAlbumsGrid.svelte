@@ -1,0 +1,193 @@
+<script lang="ts" module>
+	import type { MyAlbum } from "#lib/model/messaging/albums.ts";
+
+	// The last list seen per account, so coming back to the grid (from editing
+	// an album, say) shows it at once instead of flashing skeletons while it
+	// is fetched again.
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- only read once, as a mount's starting list
+	const seen = new Map<number, MyAlbum[]>();
+</script>
+
+<script lang="ts">
+	import { goto } from "$app/navigation";
+	import { page } from "$app/state";
+	import PlusIcon from "phosphor-svelte/lib/PlusIcon";
+	import { toast } from "svelte-sonner";
+
+	import { ApiError } from "#lib/api/api-error.ts";
+	import { showErrorToast } from "#lib/api/error-toast.ts";
+	import {
+		createAlbum,
+		deleteAlbum,
+		getMyAlbums,
+	} from "#lib/api/messaging/albums.ts";
+	import { getAlbumGridColumnsSnapshot } from "#lib/app-data/preferences.svelte.ts";
+	import ApiErrorDisplay from "#lib/components/feedback/ApiErrorDisplay.svelte";
+	import * as AlertDialog from "#lib/components/ui/alert-dialog/index.ts";
+	import { Skeleton } from "#lib/components/ui/skeleton/index.ts";
+	import AlbumTile from "./AlbumTile.svelte";
+
+	const owner: number | undefined = page.data.ourProfileId;
+	let albums = $state<MyAlbum[] | null>(
+		owner === undefined ? null : (seen.get(owner) ?? null),
+	);
+	let error = $state<unknown>(null);
+	let creating = $state(false);
+	let pendingDelete = $state<MyAlbum | null>(null);
+	let deleting = $state(false);
+
+	$effect(() => {
+		if (owner !== undefined && albums !== null) seen.set(owner, albums);
+	});
+
+	async function load() {
+		error = null;
+		try {
+			albums = await getMyAlbums();
+		} catch (err) {
+			console.error(err);
+			// A list already on screen stays; only an empty grid shows the error.
+			if (albums === null) error = err;
+		}
+	}
+
+	async function create() {
+		if (creating) return;
+		creating = true;
+		try {
+			const { albumId } = await createAlbum({ albumName: null });
+			await goto(`/albums/${albumId}`);
+		} catch (err) {
+			console.error(err);
+			const status =
+				err instanceof ApiError ? err.response?.status : null;
+			showErrorToast({
+				label:
+					status === 402
+						? "You've reached your album limit"
+						: "Failed to create album",
+				error: err,
+			});
+		} finally {
+			creating = false;
+		}
+	}
+
+	async function confirmDelete(album: MyAlbum) {
+		if (deleting) return;
+		const previous = albums;
+		deleting = true;
+		albums = previous?.filter((it) => it.albumId !== album.albumId) ?? null;
+		try {
+			await deleteAlbum({ albumId: album.albumId });
+			pendingDelete = null;
+			toast.success("Album deleted");
+		} catch (err) {
+			console.error(err);
+			albums = previous;
+			showErrorToast({ label: "Failed to delete album", error: err });
+		} finally {
+			deleting = false;
+		}
+	}
+
+	void load();
+
+	/**
+	 * The album's cover, or nothing while the API is still transcoding one of
+	 * its items — a processing item's urls all 404.
+	 *
+	 * Any processing item hides the cover, not just the first one: `GET
+	 * /v1/albums` hands back an album's content in a different order from `GET
+	 * /v2/albums/{albumId}`, so this list's idea of "first" is not the album
+	 * screen's, and picking by index would show a photo here and a placeholder
+	 * there for the same album.
+	 */
+	function albumCoverUrl(album: MyAlbum): string | null {
+		if (album.content.some((item) => item.processing === true)) return null;
+		const first = album.content[0];
+		return first === undefined ? null : first.thumbUrl || first.coverUrl;
+	}
+</script>
+
+{#snippet newAlbumTile()}
+	<button
+		type="button"
+		class="flex aspect-album cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-primary transition-colors disabled:opacity-50 can-hover:hover:bg-muted/40"
+		aria-label="New album"
+		disabled={creating}
+		onclick={() => void create()}
+	>
+		<PlusIcon class="size-4.5" />
+		<span class="text-2xs font-medium">Add</span>
+	</button>
+{/snippet}
+
+<div class="@container/photo-grid flex min-h-0 flex-1 flex-col">
+	{#if error !== null}
+		<div class="flex flex-1">
+			<ApiErrorDisplay
+				{error}
+				onRetry={() => void load()}
+				class="m-auto"
+			/>
+		</div>
+	{:else if albums === null}
+		<div
+			class="object-grid gap-1"
+			data-grid-columns={getAlbumGridColumnsSnapshot()}
+		>
+			{@render newAlbumTile()}
+			{#each Array(5)}
+				<Skeleton class="aspect-album rounded-lg" />
+			{/each}
+		</div>
+	{:else}
+		<div
+			class="object-grid gap-1"
+			data-grid-columns={getAlbumGridColumnsSnapshot()}
+		>
+			{@render newAlbumTile()}
+			{#each albums as album (album.albumId)}
+				<AlbumTile
+					coverUrl={albumCoverUrl(album)}
+					title={album.albumName || "Untitled album"}
+					badge={album.sharedCount > 0 ? "Shared" : undefined}
+					onclick={() => void goto(`/albums/${album.albumId}`)}
+					onRemove={() => (pendingDelete = album)}
+					removeLabel="Delete Album"
+				/>
+			{/each}
+		</div>
+	{/if}
+</div>
+
+<AlertDialog.Root
+	open={pendingDelete !== null}
+	onOpenChange={(open) => {
+		if (!open) pendingDelete = null;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Delete this album?</AlertDialog.Title>
+			<AlertDialog.Description>
+				The album and everyone's access to it will be removed. This
+				cannot be undone.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel disabled={deleting}>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action
+				disabled={deleting}
+				onclick={() => {
+					// Read before the dialog closes and clears it.
+					const album = pendingDelete;
+					if (album !== null) void confirmDelete(album);
+				}}
+			>
+				Delete
+			</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

@@ -1,0 +1,51 @@
+<script lang="ts">
+	import { PUBLIC_ENABLE_BLUR_EFFECTS } from "$app/env/public";
+
+	import UserSilhouette from "#lib/components/profile/UserSilhouette.svelte";
+	import MediaImage from "#lib/components/shared/MediaImage.svelte";
+	import { profileMediaUrl } from "#lib/util/media.ts";
+
+	let {
+		mediaHash,
+		class: className = "size-80",
+		size = "md",
+		onload,
+	}: {
+		mediaHash: string | null;
+		class?: import("svelte/elements").ClassValue;
+		size?: "md" | "lg" | "xl";
+		onload?: (image: HTMLImageElement) => void;
+	} = $props();
+</script>
+
+<div class={[className]}>
+	{#if mediaHash}
+		<MediaImage
+			src={profileMediaUrl({ mediaHash, size: "thumb" })}
+			class="h-full w-full"
+			imgClass={[
+				"bg-media-placeholder",
+				{ "blur-2xl": PUBLIC_ENABLE_BLUR_EFFECTS },
+			]}
+			tone="photo"
+			{size}
+			loading="lazy"
+			{onload}
+		/>
+	{:else}
+		<div
+			class="flex size-full items-center justify-center bg-media-placeholder"
+		>
+			<UserSilhouette
+				class={[
+					"m-auto",
+					{
+						"size-1/2": size === "md",
+						"size-3/5": size === "lg",
+						"size-3/4": size === "xl",
+					},
+				]}
+			/>
+		</div>
+	{/if}
+</div>

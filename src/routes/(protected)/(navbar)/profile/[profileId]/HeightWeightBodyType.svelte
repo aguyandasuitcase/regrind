@@ -1,0 +1,47 @@
+<script lang="ts">
+	import RulerIcon from "phosphor-svelte/lib/RulerIcon";
+
+	import { preferencesSnapshot } from "#lib/app-data/preferences.svelte.ts";
+	import { bodyTypes } from "#lib/model/users/profiles.ts";
+	import { labelFromMap } from "#lib/util/options.ts";
+	import { formatHeight, formatWeightGrams } from "#lib/util/units.ts";
+	import SpecSeparator from "./SpecSeparator.svelte";
+
+	let {
+		height,
+		weight,
+		bodyType,
+	}: {
+		height: number | null;
+		weight: number | null;
+		bodyType: number | null;
+	} = $props();
+
+	const units = $derived(preferencesSnapshot().units);
+	const bodyTypeLabel = $derived(
+		bodyType === null
+			? undefined
+			: labelFromMap({ labels: bodyTypes, id: bodyType }),
+	);
+</script>
+
+{#if height !== null || weight !== null || bodyTypeLabel !== undefined}
+	<span class="flex items-center gap-1.5 whitespace-nowrap">
+		<RulerIcon class="shrink-0 rotate-y-180" />
+		{#if height !== null}
+			{formatHeight(height, units)}
+		{/if}
+		{#if height !== null && weight !== null}
+			<SpecSeparator />
+		{/if}
+		{#if weight !== null}
+			{formatWeightGrams(weight, units)}
+		{/if}
+		{#if (height !== null || weight !== null) && bodyTypeLabel !== undefined}
+			<SpecSeparator />
+		{/if}
+		{#if bodyTypeLabel !== undefined}
+			{bodyTypeLabel}
+		{/if}
+	</span>
+{/if}
