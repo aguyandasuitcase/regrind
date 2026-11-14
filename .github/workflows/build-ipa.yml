@@ -38,7 +38,7 @@ jobs:
         run: bun run check
 
   ios:
-    name: Unsigned iPad IPA
+    name: Unsigned universal IPA
     needs: js-checks
     runs-on: macos-15
     timeout-minutes: 90
@@ -67,10 +67,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --no-summary
 
-      - name: Unsigned, iPad only, sideload bundle id
+      - name: Unsigned, universal (iPhone and iPad), sideload bundle id
         run: |
           P=src-tauri/gen/apple/regrind.xcodeproj/project.pbxproj
-          perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 2;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
+          perl -0pi -e 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;/g; s/org\.regrind\.ios/dev.sideload.regrind/g' "$P"
           sed -i '' 's/org\.regrind\.ios/dev.sideload.regrind/g' src-tauri/tauri.ios.conf.json src-tauri/gen/apple/project.yml
           # Tauri rejects prerelease versions like 0.1.0-beta.21-dev as bundle version
           v="$(jq -r .version src-tauri/tauri.conf.json)"
