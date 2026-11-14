@@ -124,7 +124,10 @@ Backport of [tauri#16220](https://github.com/tauri-apps/tauri/pull/16220). **Del
 | `android/build.gradle.kts`             | Drop the `play-services-location` dependency.                                                                                                  |
 | `android/src/main/java/Geolocation.kt` | Reimplement on the platform `LocationManager` via `androidx.core.location`, which back-compats it to `minSdk` 28. GPS and network providers.   |
 | `android/src/main/java/Geolocation.kt` | Fix `getLastLocation`, which kept the oldest fix within `maximumAge` instead of the freshest.                                                  |
+| `ios/Sources/GeolocationPlugin.swift`  | Allow background location updates when `UIBackgroundModes` has `location`, so the iOS keep-alive can watch the location.                       |
 
 Accuracy and time to first fix are worse where Play Services exists, since the platform API does no sensor fusion.
+
+The iOS hunk only matters for the background keep-alive. It does nothing unless the app declares the `location` background mode.
 
 **Delete when upstream drops `play-services-location`.** [plugins-workspace#3377](https://github.com/tauri-apps/plugins-workspace/pull/3377) does not: it keeps the dependency and the GMS-first path, and needs API 31.

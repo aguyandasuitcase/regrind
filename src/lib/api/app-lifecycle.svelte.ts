@@ -1,5 +1,6 @@
 import { callMethod } from "#lib/api/methods.ts";
 import { isMobilePlatform } from "#lib/platform/os.ts";
+import { keepAlive } from "#lib/push/keep-alive.svelte.ts";
 
 class AppLifecycle {
 	active = $state(true);
@@ -8,8 +9,11 @@ class AppLifecycle {
 	constructor() {
 		if (typeof document === "undefined" || !isMobilePlatform()) return;
 		document.addEventListener("visibilitychange", () => {
-			if (document.visibilityState === "hidden") void this.deactivate();
-			else void this.activate();
+			// While the keep-alive runs the app is meant to stay reachable in the
+			// background, so it must not tell the backend it went away.
+			if (document.visibilityState === "hidden") {
+				if (!keepAlive.running) void this.deactivate();
+			} else void this.activate();
 		});
 	}
 

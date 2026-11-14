@@ -101,6 +101,9 @@ const preferencesSchema = z.object({
 	onboardingComplete: z.boolean().default(false),
 	gridSearchFilters: gridSearchFiltersSchema.optional(),
 	gridFilterPresets: z.array(gridFilterPresetSchema).default([]).catch([]),
+	// iOS only: watch the location in the background so the app keeps running
+	// and can post local notifications. Per device, so it is not an account key.
+	keepAliveInBackground: z.boolean().default(false),
 	notifyMessages: z.boolean().default(true),
 	notifyTaps: z.boolean().default(true),
 	revealMessageRead: z.boolean().default(false),

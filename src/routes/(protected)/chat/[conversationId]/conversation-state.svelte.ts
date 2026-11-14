@@ -18,6 +18,7 @@ import {
 } from "#lib/chat/message-deleted.ts";
 import { withRegionGrant } from "#lib/entitlements/expiring-media-entitlement.ts";
 import { previewFromMessage } from "#lib/model/messaging/message-preview.ts";
+import { notifications } from "#lib/notifications/notifications.svelte.ts";
 import { reconciler } from "#lib/util/reconcile.ts";
 import { stopListening } from "#lib/ws.svelte.ts";
 import type { ConversationsState } from "#lib/chat/conversations-state.svelte.ts";
@@ -324,6 +325,7 @@ export class ConversationState {
 			this.lastReadTimestamp = cached.lastReadTimestamp;
 			this.loading = false;
 			void this.#conversations.markRead(this.conversationId);
+			void notifications.withdrawConversation(this.conversationId);
 			void this.#reconcileMessages();
 			return;
 		}
@@ -333,6 +335,7 @@ export class ConversationState {
 				conversationId: this.conversationId,
 			});
 			void this.#conversations.markRead(this.conversationId);
+			void notifications.withdrawConversation(this.conversationId);
 			if (this.#destroyed) return;
 			this.messages = removeDuplicateMessages(
 				result.messages.map(asSent),

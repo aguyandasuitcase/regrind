@@ -1,7 +1,9 @@
 import {
+	getActive,
 	isPermissionGranted,
 	onAction,
 	registerActionTypes,
+	removeActive,
 	requestPermission,
 	sendNotification,
 } from "@tauri-apps/plugin-notification";
@@ -278,6 +280,24 @@ class NotificationService {
 			actionTypeId: CHAT_ACTION_TYPE,
 			attachments,
 		});
+	}
+
+	/**
+	 * Take a conversation's notifications out of the Notification Center once the
+	 * chat is open, which also brings the icon badge down (iOS only; Android's
+	 * pushes are cleared by the push bridge).
+	 */
+	async withdrawConversation(conversationId: string): Promise<void> {
+		if (!isIosPlatform()) return;
+		try {
+			const waiting = (await getActive()).filter(
+				(notification) => notification.group === conversationId,
+			);
+			if (waiting.length === 0) return;
+			await removeActive(waiting.map(({ id }) => ({ id })));
+		} catch (error) {
+			console.error("[notifications] could not withdraw", error);
+		}
 	}
 
 	#conversationFor(raw: unknown): string | undefined {

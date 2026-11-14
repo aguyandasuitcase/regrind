@@ -2,6 +2,7 @@
 	import BellSlashIcon from "phosphor-svelte/lib/BellSlashIcon";
 	import ChatCircleDotsIcon from "phosphor-svelte/lib/ChatCircleDotsIcon";
 	import HandTapIcon from "phosphor-svelte/lib/HandTapIcon";
+	import MapPinIcon from "phosphor-svelte/lib/MapPinIcon";
 	import WarningCircleIcon from "phosphor-svelte/lib/WarningCircleIcon";
 	import { onMount } from "svelte";
 	import { toast } from "svelte-sonner";
@@ -13,11 +14,13 @@
 	} from "#lib/app-data/preferences.svelte.ts";
 	import SettingsRow from "#lib/components/settings/SettingsRow.svelte";
 	import SettingsSwitchRow from "#lib/components/settings/SettingsSwitchRow.svelte";
+	import { isIosPlatform } from "#lib/platform/os.ts";
 	import { notificationAccess } from "#lib/notifications/permission.svelte.ts";
 	import { push } from "#lib/notifications/push.svelte.ts";
 
 	let notifyMessages = $state(false);
 	let notifyTaps = $state(false);
+	let keepAliveInBackground = $state(false);
 	let loaded = $state(false);
 
 	const access = $derived(notificationAccess.current);
@@ -41,6 +44,7 @@
 			const prefs = await getPreferences();
 			notifyMessages = prefs.notifyMessages;
 			notifyTaps = prefs.notifyTaps;
+			keepAliveInBackground = prefs.keepAliveInBackground;
 			loaded = true;
 		})().catch((e) => {
 			console.error("Failed to load preferences", e);
@@ -121,6 +125,34 @@
 		<HandTapIcon weight="fill" />
 	{/snippet}
 </SettingsSwitchRow>
+
+{#if isIosPlatform()}
+	<SettingsSwitchRow
+		title="Keep running in background"
+		description="Experimental. Uses a low-accuracy location watch so iOS keeps the app running and notifications arrive. Shows the location indicator and uses more battery. Needs location access while using the app."
+		disabled={!loaded}
+		bind:checked={
+			() => keepAliveInBackground,
+			(next: boolean) => {
+				const previous = keepAliveInBackground;
+				keepAliveInBackground = next;
+				setPreferences({ keepAliveInBackground: next }).catch(
+					(error: unknown) => {
+						keepAliveInBackground = previous;
+						showErrorToast({
+							label: "Failed to save preferences",
+							error,
+						});
+					},
+				);
+			}
+		}
+	>
+		{#snippet icon()}
+			<MapPinIcon weight="fill" />
+		{/snippet}
+	</SettingsSwitchRow>
+{/if}
 
 <!-- The switches above are ReGrind's own preference; these rows are the reasons
      a notification still never arrives. Without them the only clue was a line

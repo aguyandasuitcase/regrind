@@ -42,6 +42,22 @@ const CRATES = [
 		],
 	},
 	{
+		name: "tauri-plugin-notification",
+		version: "2.3.3",
+		sha256: "01fc2c5ff41105bd1f7242d8201fdf3efd70749b82fa013a17f2126357d194cc",
+		keep: [
+			"Cargo.toml",
+			"LICENSE_APACHE-2.0",
+			"LICENSE_MIT",
+			"android",
+			"api-iife.js",
+			"build.rs",
+			"ios",
+			"permissions",
+			"src",
+		],
+	},
+	{
 		name: "tauri-codegen",
 		version: "2.6.3",
 		sha256: "08279169ff42f8fc45a1dbc9dcae888893ba95288142e5880c59b93a26d2cfc5",

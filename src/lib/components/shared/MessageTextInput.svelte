@@ -22,6 +22,19 @@
 	} = $props();
 
 	const isMobile = isMobilePlatform();
+
+	// https://bugs.webkit.org/show_bug.cgi?id=165004
+	function isCompositionKeydown(event: KeyboardEvent): boolean {
+		return event.isComposing || event.keyCode === 229;
+	}
+
+	// An on-screen keyboard's return key starts a new line, so only a key press
+	// from a physical keyboard sends on a touch device. Those carry a key code
+	// ("Enter"); the on-screen keyboard's presses have none.
+	function sendsOnEnter(event: KeyboardEvent): boolean {
+		if (!isMobile) return true;
+		return event.code === "Enter" || event.code === "NumpadEnter";
+	}
 </script>
 
 <div class="relative flex min-w-0 flex-1">
@@ -44,7 +57,12 @@
 				onEscape();
 				return;
 			}
-			if (!isMobile && event.key === "Enter" && !event.shiftKey) {
+			if (
+				event.key === "Enter" &&
+				!event.shiftKey &&
+				!isCompositionKeydown(event) &&
+				sendsOnEnter(event)
+			) {
 				event.preventDefault();
 				event.currentTarget.form?.requestSubmit();
 			}

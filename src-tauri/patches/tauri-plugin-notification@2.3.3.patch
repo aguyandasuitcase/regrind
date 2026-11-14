@@ -1,0 +1,112 @@
+diff --git a/ios/Sources/NotificationHandler.swift b/ios/Sources/NotificationHandler.swift
+index 1bf134b..a585702 100644
+--- a/ios/Sources/NotificationHandler.swift
++++ b/ios/Sources/NotificationHandler.swift
+@@ -3,8 +3,25 @@
+ // SPDX-License-Identifier: MIT
+ 
+ import Tauri
++import UIKit
+ import UserNotifications
+ 
++// The icon badge is how many notifications are still waiting in the
++// Notification Center, so it falls as they are read, removed or dismissed.
++func refreshBadge() {
++  let center = UNUserNotificationCenter.current()
++  center.getDeliveredNotifications { delivered in
++    let count = delivered.count
++    DispatchQueue.main.async {
++      if #available(iOS 16.0, *) {
++        center.setBadgeCount(count) { _ in }
++      } else {
++        UIApplication.shared.applicationIconBadgeNumber = count
++      }
++    }
++  }
++}
++
+ public class NotificationHandler: NSObject, NotificationHandlerProtocol {
+ 
+   public weak var plugin: Plugin?
+@@ -73,17 +90,24 @@ public class NotificationHandler: NSObject, NotificationHandlerProtocol {
+         inputValue: inputValue,
+         notification: toActiveNotification(originalNotificationRequest)
+       ))
++    refreshBadge()
+   }
+ 
+   func toActiveNotification(_ request: UNNotificationRequest) -> ActiveNotification {
+-    let notificationRequest = notificationsMap[request.identifier]!
++    // The map only knows notifications shown since the app last started, so one
++    // tapped after a restart is rebuilt from what travels inside it.
++    let known = notificationsMap[request.identifier]
++    let carried = request.content.userInfo["__EXTRA__"] as? [String: String]
++    let thread = request.content.threadIdentifier
+     return ActiveNotification(
+       id: Int(request.identifier) ?? -1,
+       title: request.content.title,
+       body: request.content.body,
+-      sound: notificationRequest.sound ?? "",
++      sound: known?.sound ?? "",
+       actionTypeId: request.content.categoryIdentifier,
+-      attachments: notificationRequest.attachments
++      attachments: known?.attachments,
++      extra: known?.extra ?? carried,
++      group: thread.isEmpty ? nil : thread
+     )
+   }
+ 
+@@ -109,6 +133,8 @@ struct ActiveNotification: Encodable {
+   let sound: String
+   let actionTypeId: String
+   let attachments: [NotificationAttachment]?
++  let extra: [String: String]?
++  let group: String?
+ }
+ 
+ struct ReceivedNotification: Encodable {
+diff --git a/ios/Sources/NotificationPlugin.swift b/ios/Sources/NotificationPlugin.swift
+index 6d8391b..99937d3 100644
+--- a/ios/Sources/NotificationPlugin.swift
++++ b/ios/Sources/NotificationPlugin.swift
+@@ -109,10 +109,18 @@ func showNotification(invoke: Invoke, notification: Notification)
+     identifier: "\(notification.id)", content: content, trigger: trigger
+   )
+ 
++  // The number on the app icon is how many notifications are waiting, this one
++  // included, so it has to be on the notification itself when it is posted.
+   let center = UNUserNotificationCenter.current()
+-  center.add(request) { (error: Error?) in
+-    if let theError = error {
+-      invoke.reject(theError.localizedDescription)
++  center.getDeliveredNotifications { delivered in
++    let badged = request.content.mutableCopy() as! UNMutableNotificationContent
++    badged.badge = NSNumber(value: delivered.count + 1)
++    let badgedRequest = UNNotificationRequest(
++      identifier: request.identifier, content: badged, trigger: trigger)
++    center.add(badgedRequest) { (error: Error?) in
++      if let theError = error {
++        invoke.reject(theError.localizedDescription)
++      }
+     }
+   }
+ 
+@@ -161,6 +169,10 @@ class NotificationPlugin: Plugin {
+     super.init()
+     notificationManager.notificationHandler = notificationHandler
+     notificationHandler.plugin = self
++    // Whatever was dismissed while the app was away is only noticed here.
++    NotificationCenter.default.addObserver(
++      forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
++    ) { _ in refreshBadge() }
+   }
+ 
+   @objc public func show(_ invoke: Invoke) throws {
+@@ -244,6 +256,7 @@ class NotificationPlugin: Plugin {
+       let args = try invoke.parseArgs(RemoveActiveArgs.self)
+       UNUserNotificationCenter.current().removeDeliveredNotifications(
+         withIdentifiers: args.notifications.map { String($0.id) })
++      refreshBadge()
+       invoke.resolve()
+     } catch {
+       UNUserNotificationCenter.current().removeAllDeliveredNotifications()

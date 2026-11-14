@@ -34,6 +34,7 @@
 	import { applyKeepScreenOn } from "#lib/platform/keep-screen-on.ts";
 	import { applyKeyboardInset } from "#lib/platform/keyboard-inset.ts";
 	import { isAndroidPlatform, isMobilePlatform } from "#lib/platform/os.ts";
+	import { keepAlive } from "#lib/push/keep-alive.svelte.ts";
 	import { installScrollGestureBridge } from "#lib/platform/scroll-gesture.ts";
 	import {
 		applySwipeBackGesture,
@@ -137,6 +138,14 @@
 	const onboarded = $derived(
 		preferencesLoaded() && preferencesSnapshot().onboardingComplete,
 	);
+
+	// iOS only: keeps the app running in the background so notifications arrive.
+	$effect(() => {
+		if (!onboarded || !preferencesLoaded()) return;
+		if (preferencesSnapshot().keepAliveInBackground) keepAlive.start();
+		else keepAlive.stop();
+		return () => keepAlive.stop();
+	});
 
 	let screen: HTMLDivElement | null = $state(null);
 

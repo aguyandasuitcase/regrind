@@ -262,3 +262,24 @@ index 444711a..034d372 100644
                      lastLoc = tmpLoc
                  }
              }
+diff --git a/ios/Sources/GeolocationPlugin.swift b/ios/Sources/GeolocationPlugin.swift
+index 7a2b57a..f4fedea 100644
+--- a/ios/Sources/GeolocationPlugin.swift
++++ b/ios/Sources/GeolocationPlugin.swift
+@@ -31,6 +31,16 @@ class GeolocationPlugin: Plugin, CLLocationManagerDelegate {
+   override init() {
+     super.init()
+     locationManager.delegate = self
++    // The keep-alive on iOS watches the location from the background. iOS
++    // crashes an app that enables background updates without the background
++    // mode, so only do it when Info.plist declares `location`.
++    if let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String],
++      modes.contains("location")
++    {
++      locationManager.allowsBackgroundLocationUpdates = true
++      locationManager.pausesLocationUpdatesAutomatically = false
++      locationManager.showsBackgroundLocationIndicator = true
++    }
+   }
+ 
+   //

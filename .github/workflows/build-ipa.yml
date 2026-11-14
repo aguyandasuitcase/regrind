@@ -13,8 +13,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  js-checks:
+    name: Type check and tests for our changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --no-summary
+      - name: Tests for the files we changed
+        run: |
+          bun x svelte-kit sync
+          bun x vitest run \
+            src/lib/components/shared/MessageTextInput.svelte.test.ts \
+            src/lib/push/keep-alive.svelte.test.ts \
+            src/lib/notifications/withdraw-conversation.test.ts
+      - name: Type check
+        run: bun run check
+
   ios:
     name: Unsigned iPad IPA
+    needs: js-checks
     runs-on: macos-15
     timeout-minutes: 90
     steps:
